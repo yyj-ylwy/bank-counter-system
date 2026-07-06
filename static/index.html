@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>银行柜面业务管理系统</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 登录页 -->
+  <div id="login" class="login-wrap">
+    <form id="loginForm" class="login-card">
+      <h1>银行柜面业务管理系统</h1>
+      <p class="sub">Bank Counter Business Management System</p>
+      <div class="field"><label for="emp">工号</label><input id="emp" placeholder="如 admin / S001" autocomplete="username"></div>
+      <div class="field"><label for="pw">密码</label><input id="pw" type="password" autocomplete="current-password"></div>
+      <div id="loginErr" class="login-err"></div>
+      <button type="submit" class="btn btn-block">登 录</button>
+      <p class="demo-tip">演示账号：admin/admin123 · S001/L001/F001/CC001（密码均 123456）</p>
+    </form>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="brand">银行柜面业务管理系统</div>
+      <div class="user"><span id="who"></span><button id="logout" class="btn-link">退出登录</button></div>
+    </header>
+    <div class="layout">
+      <nav class="sidebar"><ul id="menu"></ul></nav>
+      <main id="content" class="content"></main>
+    </div>
+  </div>
+
+  <script src="operations.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

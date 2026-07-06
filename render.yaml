@@ -1,0 +1,17 @@
+# Render Blueprint：在 Render 点 New -> Blueprint 选中本仓库即可一键部署。
+services:
+  - type: web
+    name: bank-counter-system
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    envVars:
+      - key: MONGODB_URI      # 在 Render 控制台手动填入 Atlas 连接串（含密码）
+        sync: false
+      - key: DB_NAME
+        value: bank_counter
+      - key: SECRET_KEY       # 自动生成随机密钥
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: 3.11.9
