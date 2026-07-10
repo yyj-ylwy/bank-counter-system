@@ -350,6 +350,14 @@ def close_account():
     if db.fx_account.count_documents({"customer_id": cust["_id"],
                                       "status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}}):
         return fail("E-3", "该客户存在未关闭的外汇子户，请先关闭")
+    # E-6 未结清信用卡账单
+    active_cards = list(db.credit_card.find({"customer_id": cust["_id"],
+                        "status": {"$in": [C.CC_ACTIVE, C.CC_FROZEN, C.CC_LOST]}}))
+    if active_cards:
+        card_ids = [c["_id"] for c in active_cards]
+        if db.credit_card_bill.count_documents({"credit_card_id": {"$in": card_ids},
+                                                "status": {"$in": [C.BILL_UNPAID, C.BILL_PARTIAL]}}):
+            return fail("E-6", "该客户存在未结清信用卡账单，请先还清后再销户")
     if dec(acc["balance"]) > 0:  # E-5 余额未清零
         return fail("E-5", f"账户仍有余额 {dec(acc['balance'])}，请先取款或转账清零")
 
@@ -359,6 +367,12 @@ def close_account():
             return ("E-4", f"账户当前为「{C.ACCOUNT_STATUS_LABEL.get(a['status'])}」，不可销户")
         if dec(a["balance"]) > 0:
             return ("E-5", f"账户仍有余额 {dec(a['balance'])}，请先取款或转账清零")
+        if db.loan.count_documents({"customer_id": cust["_id"],
+                "status": {"$in": [C.LOAN_PENDING, C.LOAN_APPROVED, C.LOAN_ACTIVE, C.LOAN_OVERDUE]}}, session=s):
+            return ("E-2", "该客户存在未结清贷款，请先结清后再销户")
+        if db.fx_account.count_documents({"customer_id": cust["_id"],
+                "status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}}, session=s):
+            return ("E-3", "该客户存在未关闭的外汇子户，请先关闭")
         db.account.update_one({"_id": a["_id"]},
                               {"$set": {"status": C.ACCOUNT_CLOSED, "card_status": C.CARD_INVALID}}, session=s)
         write_txn(db, business_type=C.TXN_CLOSE_ACCOUNT, amount=0, user_id=g.user["_id"],

@@ -7,6 +7,7 @@ from pymongo import MongoClient, ASCENDING, ReturnDocument
 from pymongo.errors import OperationFailure, ConnectionFailure
 
 import config
+import constants as C
 
 _client = None
 
@@ -96,7 +97,16 @@ def ensure_indexes():
     db.loan.create_index([("contract_no", ASCENDING)], unique=True)
     db.loan.create_index([("customer_id", ASCENDING)])
     db.fx_account.create_index([("fx_account_no", ASCENDING)], unique=True)
-    db.fx_account.create_index([("customer_id", ASCENDING), ("currency", ASCENDING)])
+    try:
+        db.fx_account.drop_index("customer_id_1_currency_1")
+    except Exception:
+        pass
+    try:
+        db.fx_account.create_index([("customer_id", ASCENDING), ("currency", ASCENDING)], unique=True,
+                                   name="uk_fx_customer_currency_active",
+                                   partialFilterExpression={"status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}})
+    except Exception:
+        pass
     db.credit_card.create_index([("card_no", ASCENDING)], unique=True)
     db.credit_card.create_index([("customer_id", ASCENDING)])
     db.credit_card_bill.create_index([("credit_card_id", ASCENDING), ("bill_cycle", ASCENDING)], unique=True)

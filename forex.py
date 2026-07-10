@@ -4,6 +4,7 @@
       「卖出价」= 银行卖出外币给客户时用（客户买入外币）。
 """
 from flask import Blueprint, request, g
+from pymongo.errors import DuplicateKeyError
 
 import constants as C
 from db import get_db, run_in_transaction
@@ -67,22 +68,25 @@ def open_subaccount():
     base = db.account.find_one({"customer_id": cust["_id"], "status": C.ACCOUNT_NORMAL})
     if not base:  # E-1 无有效储蓄账户
         return fail("E-1", "客户无有效储蓄账户，请先开立储蓄账户")
-    if db.fx_account.count_documents({"customer_id": cust["_id"], "currency": currency,
-                                      "status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}}):
-        return fail("E-2", f"客户已有 {currency} 外汇子户")  # E-2 已存在
-
-    fx = {
-        "fx_account_no": new_fx_account_no(),
-        "customer_id": cust["_id"],
-        "base_account_id": base["_id"],
-        "currency": currency,
-        "balance": m(0),
-        "status": C.FX_NORMAL,
-        "created_at": now(),
-    }
-    fx["_id"] = db.fx_account.insert_one(fx).inserted_id
-    write_audit(db, user_id=g.user["_id"], action="FX_OPEN", object_type="fx_account",
-                object_id=fx["fx_account_no"], result=C.RESULT_SUCCESS, detail={"currency": currency})
+    def txn(s):
+        if db.fx_account.count_documents({"customer_id": cust["_id"], "currency": currency,
+                                          "status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}}, session=s):
+            return None, ("E-2", f"客户已有 {currency} 外汇子户")
+        fx = {
+            "fx_account_no": new_fx_account_no(s), "customer_id": cust["_id"],
+            "base_account_id": base["_id"], "currency": currency, "balance": m(0),
+            "status": C.FX_NORMAL, "created_at": now(),
+        }
+        fx["_id"] = db.fx_account.insert_one(fx, session=s).inserted_id
+        write_audit(db, user_id=g.user["_id"], action="FX_OPEN", object_type="fx_account",
+                    object_id=fx["fx_account_no"], result=C.RESULT_SUCCESS, detail={"currency": currency}, session=s)
+        return fx, None
+    try:
+        fx, err = run_in_transaction(txn)
+    except DuplicateKeyError:
+        return fail("E-2", f"客户已有 {currency} 外汇子户")
+    if err:
+        return fail(err[0], err[1])
     return ok({"fx_account": fx_view(fx, cust, base)}, "外汇子户开立成功")
 
 
@@ -146,8 +150,11 @@ def trade():
         fxa = db.fx_account.find_one({"_id": fx["_id"]}, session=s)  # 事务内重读子户，读改写一致
         if fxa["status"] != C.FX_NORMAL:
             return None, ("E-FXSTAT", f"外汇子户状态为「{C.FX_STATUS_LABEL.get(fxa['status'])}」，不可交易")
+        base_acc = db.account.find_one({"_id": fxa["base_account_id"]}, session=s)
+        if not base_acc:
+            return None, ("E-NOACC", "关联储蓄账户不存在")
         if direction == "BUY":  # 客户买入外币：扣本币，加外币
-            acc, err = check_account(db, base["account_no"], need_amount=cny, session=s)  # E-2 余额不足
+            acc, err = check_account(db, base_acc["account_no"], need_amount=cny, session=s)  # E-2 余额不足
             if err:
                 return None, err
             db.account.update_one({"_id": acc["_id"]},
@@ -158,7 +165,7 @@ def trade():
         else:  # 客户卖出外币：扣外币，加本币
             if dec(fxa["balance"]) < foreign:  # E-2 外币余额不足
                 return None, ("E-2", f"外币余额不足，当前 {dec(fxa['balance'])} {fxa['currency']}")
-            acc, err = check_account(db, base["account_no"], session=s)
+            acc, err = check_account(db, base_acc["account_no"], session=s)
             if err:
                 return None, err
             db.fx_account.update_one({"_id": fxa["_id"]},
@@ -193,40 +200,48 @@ def change():
     d = _body()
     fx_no = (d.get("fx_account_no") or "").strip()
     ctype = (d.get("change_type") or "").strip().upper()  # FREEZE/UNFREEZE/CLOSE/REBIND
+    new_no = (d.get("new_base_account_no") or "").strip()
     db = get_db()
     fx = db.fx_account.find_one({"fx_account_no": fx_no})
     if not fx:  # E-1
         return fail("E-1", "外汇子户不存在，请重新输入")
-    if fx["status"] == C.FX_CLOSED:  # 关闭是终态，不能再冻结/解冻/重新关闭
+    if fx["status"] == C.FX_CLOSED:  # 关闭是终态，不能再变更
         return fail("E-CLOSED", "外汇子户已关闭，不能再变更")
-
-    updates = {}
-    if ctype == "FREEZE":
-        if fx["status"] != C.FX_NORMAL:
-            return fail("E-STATE", "仅正常状态可冻结")
-        updates["status"] = C.FX_FROZEN
-    elif ctype == "UNFREEZE":
-        if fx["status"] != C.FX_FROZEN:
-            return fail("E-STATE", "仅冻结状态可解冻")
-        updates["status"] = C.FX_NORMAL
-    elif ctype == "CLOSE":
-        if dec(fx["balance"]) != 0:  # E-2 有余额不可关闭
-            return fail("E-2", f"子户仍有余额 {dec(fx['balance'])}，请先结清后再关闭")
-        updates["status"] = C.FX_CLOSED
-    elif ctype == "REBIND":
-        new_no = (d.get("new_base_account_no") or "").strip()
-        new_acc = db.account.find_one({"account_no": new_no})
-        if not new_acc or new_acc["customer_id"] != fx["customer_id"] or new_acc["status"] != C.ACCOUNT_NORMAL:
-            return fail("E-3", "新关联账户不存在、状态异常或不属于该客户")  # E-3
-        updates["base_account_id"] = new_acc["_id"]
-    else:
+    if ctype not in ("FREEZE", "UNFREEZE", "CLOSE", "REBIND"):
         return fail("E-OP", "变更类型非法（FREEZE/UNFREEZE/CLOSE/REBIND）", 400)
 
-    db.fx_account.update_one({"_id": fx["_id"]}, {"$set": updates})
-    write_audit(db, user_id=g.user["_id"], action=f"FX_{ctype}", object_type="fx_account",
-                object_id=fx_no, result=C.RESULT_SUCCESS,
-                detail={"reason": (d.get("reason") or "").strip()})
-    fx.update(updates)
+    def txn(s):
+        f = db.fx_account.find_one({"_id": fx["_id"]}, session=s)  # 事务内重读，防并发（如关闭校验后被 trade 充值）
+        if f["status"] == C.FX_CLOSED:
+            return None, ("E-CLOSED", "外汇子户已关闭，不能再变更")
+        updates = {}
+        if ctype == "FREEZE":
+            if f["status"] != C.FX_NORMAL:
+                return None, ("E-STATE", "仅正常状态可冻结")
+            updates["status"] = C.FX_FROZEN
+        elif ctype == "UNFREEZE":
+            if f["status"] != C.FX_FROZEN:
+                return None, ("E-STATE", "仅冻结状态可解冻")
+            updates["status"] = C.FX_NORMAL
+        elif ctype == "CLOSE":
+            if dec(f["balance"]) != 0:  # E-2 事务内重读余额，避免并发充值后仍被关闭
+                return None, ("E-2", f"子户仍有余额 {dec(f['balance'])}，请先结清后再关闭")
+            updates["status"] = C.FX_CLOSED
+        else:  # REBIND
+            new_acc = db.account.find_one({"account_no": new_no}, session=s)
+            if not new_acc or new_acc["customer_id"] != f["customer_id"] or new_acc["status"] != C.ACCOUNT_NORMAL:
+                return None, ("E-3", "新关联账户不存在、状态异常或不属于该客户")
+            updates["base_account_id"] = new_acc["_id"]
+        db.fx_account.update_one({"_id": f["_id"]}, {"$set": updates}, session=s)
+        write_audit(db, user_id=g.user["_id"], action=f"FX_{ctype}", object_type="fx_account",
+                    object_id=fx_no, result=C.RESULT_SUCCESS,
+                    detail={"reason": (d.get("reason") or "").strip()}, session=s)
+        return updates, None
+
+    updates, err = run_in_transaction(txn)
+    if err:
+        return fail(err[0], err[1])
+    fx = db.fx_account.find_one({"_id": fx["_id"]})
     cust = db.customer.find_one({"_id": fx["customer_id"]})
     base = db.account.find_one({"_id": fx["base_account_id"]})
     return ok({"fx_account": fx_view(fx, cust, base)}, "外汇账户变更成功")
