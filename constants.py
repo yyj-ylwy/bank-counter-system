@@ -81,6 +81,7 @@ TXN_FX_SELL = "FX_SELL"                 # 客户卖出外币
 TXN_CC_REPAY = "CC_REPAY"               # 信用卡还款
 TXN_CC_CASH = "CC_CASH_ADVANCE"         # 预借现金
 TXN_CC_CASH_FEE = "CC_CASH_FEE"         # 预借现金手续费
+TXN_CC_CASH_PAYOUT = "CC_CASH_PAYOUT"   # 预借现金转入储蓄账户（账户侧入账流水）
 
 TXN_STATUS_SUCCESS = 1
 TXN_STATUS_FAIL = 0
@@ -130,5 +131,5 @@ TXN_TYPE_LABEL = {
     "TRANSFER_IN": "转账转入", "TRANSFER_FEE": "转账手续费", "CLOSE_ACCOUNT": "销户",
     "LOAN_DISBURSE": "放款", "LOAN_REPAY": "贷款还款", "FX_BUY": "买入外币",
     "FX_SELL": "卖出外币", "CC_REPAY": "信用卡还款", "CC_CASH_ADVANCE": "预借现金",
-    "CC_CASH_FEE": "预借现金手续费",
+    "CC_CASH_FEE": "预借现金手续费", "CC_CASH_PAYOUT": "预借现金入账",
 }

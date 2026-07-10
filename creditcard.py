@@ -13,7 +13,7 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, dec, m, now,
-    find_customer, check_account, write_txn, write_audit,
+    find_customer, check_account, write_txn, write_audit, verify_owner,
     get_param_dec, customer_view, txn_view, new_credit_card_no,
 )
 
@@ -322,8 +322,12 @@ def cash_advance():
             acc, err = check_account(db, payout_account, session=s)
             if err:
                 return None, ("E-PAYOUT", f"出款账户不可用：{err[1]}")
+            if not verify_owner(cust, acc):
+                return None, ("E-OWNER", "出款账户不属于该持卡客户")
             db.account.update_one({"_id": acc["_id"]},
                                   {"$set": {"balance": m(dec(acc["balance"]) + amount)}}, session=s)
+            write_txn(db, business_type=C.TXN_CC_CASH_PAYOUT, amount=amount, user_id=g.user["_id"],
+                      customer_id=cc2["customer_id"], account_id=acc["_id"], related_id=cc2["_id"], session=s)
             payout_msg = f"转入账户 {payout_account}"
         write_audit(db, user_id=g.user["_id"], action=C.TXN_CC_CASH, object_type="credit_card",
                     object_id=card_no, result=C.RESULT_SUCCESS,

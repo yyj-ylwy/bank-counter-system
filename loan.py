@@ -9,7 +9,7 @@ from auth import require_role
 from common import (
     ok, fail, D, dec, m, oid, now,
     find_customer, check_account, write_txn, write_audit,
-    get_param_dec, customer_view, txn_view, parse_date_range, new_contract_no,
+    get_param, get_param_dec, customer_view, txn_view, parse_date_range, new_contract_no,
 )
 
 bp = Blueprint("loan", __name__, url_prefix="/api/loan")
@@ -44,6 +44,7 @@ def loan_view(db, ln, with_customer=True):
         "guarantee": ln.get("guarantee"),
         "due_date": ln["due_date"].strftime("%Y-%m-%d") if ln.get("due_date") else None,
         "repay_log": ln.get("repay_log") or [],
+        "collection_log": ln.get("collection_log") or [],   # UC-205 催收记录，供查询/展示
         "created_at": ln["created_at"].strftime("%Y-%m-%d %H:%M:%S") if ln.get("created_at") else None,
     }
     if with_customer:
@@ -121,16 +122,18 @@ def approve():
     ln = db.loan.find_one({"contract_no": contract_no})
     if not ln:
         return fail("E-NOLOAN", "未找到贷款申请")
-    if ln["status"] != C.LOAN_PENDING:  # E-1 已被处理
+    # 待审核(PENDING)与待补件(SUPPLEMENT)都允许再次审批，避免补件后合同号被永久卡死
+    if ln["status"] not in (C.LOAN_PENDING, C.LOAN_SUPPLEMENT):  # E-1 已被处理
         return fail("E-1", f"该申请已被处理（当前：{C.LOAN_STATUS_LABEL.get(ln['status'])}），请刷新")
 
     updates = {}
     if decision == "APPROVED":
-        appr_amt = D(d.get("approved_amount") or ln["amount"])
+        # 用 not in (None, "") 判定“是否填写”，避免显式传入的 0 被 `x or default` 静默替换成原申请值而绕过校验
+        appr_amt = D(d["approved_amount"]) if d.get("approved_amount") not in (None, "") else D(ln["amount"])
         # 利率不能用 D()（只保留 2 位会把 0.0435 截成 0.04）；用 dec() 保留精度，存库时 D6_rate 再定 4 位
         rate = dec(d["interest_rate"]) if d.get("interest_rate") not in (None, "") \
             else get_param_dec(db, C.P_LOAN_RATE, "0.0435")
-        term = int(d.get("term_months") or ln["term_months"])
+        term = int(d["term_months"]) if d.get("term_months") not in (None, "") else int(ln["term_months"])
         if appr_amt <= 0 or rate < 0 or term <= 0:
             return fail("E-VAL", "批准金额/利率/期限不合法", 400)
         updates = {"status": C.LOAN_APPROVED, "amount": m(appr_amt),
@@ -222,22 +225,40 @@ def repay():
     if not ln:
         return fail("E-NOLOAN", "未找到贷款")
     repay_no = account_no or _acc_no(db, ln)
+    # 逾期罚息日利率（可能未维护）：仅在贷款确实逾期时才要求存在，避免正常还款被参数缺失阻断
+    raw_overdue_rate = get_param(db, C.P_LOAN_OVERDUE_RATE)
 
     def txn(s):
         loan = db.loan.find_one({"_id": ln["_id"]}, session=s)  # 事务内重读，读改写一致
         if loan["status"] not in (C.LOAN_ACTIVE, C.LOAN_OVERDUE):  # E-2 已结清
             return None, ("E-2", f"贷款当前为「{C.LOAN_STATUS_LABEL.get(loan['status'])}」，无需还款")
-        if amount > dec(loan["balance"]):  # E-3 超额
-            return None, ("E-3", f"还款金额超过应还余额 {dec(loan['balance'])}")
+        principal = dec(loan["balance"])
+        # 实时计算当前应收罚息（罚息不并入 balance，按“剩余本金 × 日罚息率 × 逾期天数”在还款时结算）
+        penalty = D(0)
+        due = loan.get("due_date")
+        if due and due < now() and principal > 0:
+            if raw_overdue_rate is None:  # 逾期却缺罚息参数，明确报错而不是按 0 处理
+                return None, ("E-3", "缺少逾期罚息参数，请管理员先维护 LOAN_OVERDUE_RATE")
+            overdue_days = (now() - due).days
+            penalty = D(principal * dec(raw_overdue_rate) * overdue_days)
+        total_due = principal + penalty
+        if amount > total_due:  # E-3 超额（本金 + 当前罚息）
+            return None, ("E-3", f"还款金额超过应还合计 {total_due}（本金 {principal} + 罚息 {penalty}）")
         acc, err = check_account(db, repay_no, need_amount=amount, session=s)  # E-1 余额不足
         if err:
             return None, err
-        new_loan_bal = dec(loan["balance"]) - amount
+        # 罚息优先冲抵，剩余冲抵本金；只有本金还清且当前罚息付清才算结清
+        pay_penalty = penalty if amount >= penalty else amount
+        pay_principal = amount - pay_penalty
+        new_loan_bal = principal - pay_principal
         db.account.update_one({"_id": acc["_id"]},
                               {"$set": {"balance": m(dec(acc["balance"]) - amount)}}, session=s)
-        log_entry = {"time": now().strftime("%Y-%m-%d %H:%M:%S"), "amount": float(amount),
-                     "account_no": repay_no, "balance_after": float(new_loan_bal)}
-        new_status = C.LOAN_PAID_OFF if new_loan_bal <= 0 else loan["status"]
+        settled = new_loan_bal <= 0 and (penalty - pay_penalty) <= 0
+        new_status = C.LOAN_PAID_OFF if settled else loan["status"]
+        # 金额一律存 Decimal128（与全系统金额不变式一致），仅在对外序列化时才转 float
+        log_entry = {"time": now().strftime("%Y-%m-%d %H:%M:%S"), "amount": m(amount),
+                     "principal_part": m(pay_principal), "penalty_part": m(pay_penalty),
+                     "account_no": repay_no, "balance_after": m(new_loan_bal)}
         db.loan.update_one({"_id": loan["_id"]},
                            {"$set": {"balance": m(new_loan_bal), "status": new_status},
                             "$push": {"repay_log": log_entry}}, session=s)
@@ -245,7 +266,8 @@ def repay():
                   customer_id=loan["customer_id"], account_id=acc["_id"], related_id=loan["_id"], session=s)
         write_audit(db, user_id=g.user["_id"], action=C.TXN_LOAN_REPAY, object_type="loan",
                     object_id=contract_no, result=C.RESULT_SUCCESS,
-                    detail={"amount": str(amount), "balance_after": str(new_loan_bal)}, session=s)
+                    detail={"amount": str(amount), "principal": str(pay_principal),
+                            "penalty": str(pay_penalty), "balance_after": str(new_loan_bal)}, session=s)
         return new_status, None
 
     status, err = run_in_transaction(txn)
@@ -271,9 +293,12 @@ def overdue_list():
         cust = db.customer.find_one({"customer_no": customer_no})
         q["customer_id"] = cust["_id"] if cust else None
 
-    overdue_rate = get_param_dec(db, C.P_LOAN_OVERDUE_RATE, None)
-    if overdue_rate is None:  # E-3 罚息参数缺失
+    # 注意：不能用 get_param_dec(..., None)，因为 dec(None) 会把缺失值变成 Decimal(0)，
+    # 导致“参数缺失应报错”分支永远走不到、罚息被静默算成 0。先判存在性，再转 Decimal。
+    raw_rate = get_param(db, C.P_LOAN_OVERDUE_RATE)
+    if raw_rate is None:  # E-3 罚息参数缺失
         return fail("E-3", "缺少逾期罚息参数，请管理员先维护 LOAN_OVERDUE_RATE")
+    overdue_rate = dec(raw_rate)
 
     today = now()
     rows = []

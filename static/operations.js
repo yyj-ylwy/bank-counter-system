@@ -130,7 +130,8 @@ const OPERATIONS = {
     {
       code: 'UC-205b', name: '催收登记', method: 'POST', path: '/api/loan/overdue',
       fields: [{ n: 'contract_no', label: '合同号', required: true }, { n: 'method', label: '催收方式' }, { n: 'feedback', label: '客户反馈' }, { n: 'note', label: '处理意见' }],
-      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label }),
+      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label })
+        + (d.loan.collection_log && d.loan.collection_log.length ? '<h4>催收记录</h4>' + tbl(d.loan.collection_log, [{ k: 'time', label: '时间' }, { k: 'method', label: '方式' }, { k: 'feedback', label: '客户反馈' }, { k: 'note', label: '处理意见' }, { k: 'operator', label: '经办' }]) : ''),
     },
     {
       code: 'UC-206', name: '贷款查询统计', method: 'GET', path: '/api/loan/query',
