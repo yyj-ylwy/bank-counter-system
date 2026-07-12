@@ -135,17 +135,21 @@ def approve():
         repay_day = as_int(d.get("repay_day"), 20)
         if not (1 <= bill_day <= 28 and 1 <= repay_day <= 28):
             return fail("E-DAY", "账单日/还款日应在 1~28 之间", 400)
-        db.credit_card.update_one({"_id": cc["_id"]}, {"$set": {
+        res = db.credit_card.update_one({"_id": cc["_id"], "status": C.CC_PENDING}, {"$set": {  # CAS 防并发双审
             "status": C.CC_ACTIVE, "credit_limit": m(limit), "available_limit": m(limit),
             "bill_day": bill_day, "repay_day": repay_day}})
+        if res.matched_count == 0:
+            return fail("E-STATE", "该申请已被处理，请刷新")
         write_audit(db, user_id=g.user["_id"], action="CC_APPROVE", object_type="credit_card",
                     object_id=card_no, result=C.RESULT_SUCCESS, detail={"limit": str(limit)})
         cc = db.credit_card.find_one({"_id": cc["_id"]})
         return ok({"credit_card": cc_view(cc, db.customer.find_one({"_id": cc["customer_id"]}))},
                   "审批通过，信用卡已激活")
     elif decision == "REJECTED":  # E-2
-        db.credit_card.update_one({"_id": cc["_id"]}, {"$set": {
+        res = db.credit_card.update_one({"_id": cc["_id"], "status": C.CC_PENDING}, {"$set": {  # CAS 防并发双审
             "status": C.CC_REJECTED, "reject_reason": (d.get("reason") or "").strip()}})
+        if res.matched_count == 0:
+            return fail("E-STATE", "该申请已被处理，请刷新")
         write_audit(db, user_id=g.user["_id"], action="CC_REJECT", object_type="credit_card",
                     object_id=card_no, result=C.RESULT_SUCCESS)
         cc = db.credit_card.find_one({"_id": cc["_id"]})
@@ -219,6 +223,7 @@ def repay():
     d = _body()
     card_no = (d.get("card_no") or "").strip()
     account_no = (d.get("account_no") or "").strip()
+    id_no = norm_id(d.get("id_no"))
     repay_type = (d.get("repay_type") or "PARTIAL").strip().upper()  # FULL/MIN/PARTIAL
     if repay_type not in ("FULL", "MIN", "PARTIAL"):  # 拼错不再静默当部分还款
         return fail("E-OP", "还款方式非法（全额/最低/部分）", 400)
@@ -259,6 +264,11 @@ def repay():
         acc, err = check_account(db, account_no, need_amount=pay, session=s)  # E-1 余额不足
         if err:
             return None, err
+        _cust, ierr = check_identity(db, cc2["customer_id"], id_no, session=s)  # 还款须核验持卡人身份
+        if ierr:
+            return None, ierr
+        if acc["customer_id"] != cc2["customer_id"]:  # 还款储蓄账户须属持卡人本人，杜绝用他人余额清卡
+            return None, ("E-OWNER", "还款储蓄账户不属于持卡人")
         db.account.update_one({"_id": acc["_id"]},
                               {"$set": {"balance": m(dec(acc["balance"]) - pay)}}, session=s)
         # 恢复可用额度（不超过授信额度）
@@ -413,10 +423,13 @@ def card_op():
         new_card = new_credit_card_no()
         # 换新卡号但保留原风控状态：冻结卡补卡后仍冻结（需另行解冻），不借补卡绕过风控
         new_status = C.CC_FROZEN if cur == C.CC_FROZEN else C.CC_ACTIVE
-        db.credit_card.update_one({"_id": cc["_id"]}, {
+        # CAS：仅当卡号/状态未变才换卡，防并发双击生成两个新卡号导致丢卡
+        res = db.credit_card.update_one({"_id": cc["_id"], "card_no": cc["card_no"], "status": cur}, {
             "$set": {"card_no": new_card, "status": new_status},
             "$push": {"former_card_nos": {"card_no": cc["card_no"],
                                           "invalidated_at": now().strftime("%Y-%m-%d %H:%M:%S")}}})
+        if res.matched_count == 0:
+            return fail("E-2", "卡状态已变化，请刷新后重试")
         write_audit(db, user_id=g.user["_id"], action="CC_REISSUE", object_type="credit_card",
                     object_id=card_no, result=C.RESULT_SUCCESS,
                     detail={"old_card": cc["card_no"], "new_card": new_card})

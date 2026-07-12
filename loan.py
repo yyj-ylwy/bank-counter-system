@@ -178,7 +178,11 @@ def approve():
     else:
         return fail("E-OP", "审批结论非法（APPROVED/REJECTED/SUPPLEMENT）", 400)
 
-    db.loan.update_one({"_id": ln["_id"]}, {"$set": updates})
+    # 条件更新(CAS)：仅当仍为待审核/待补件才写，防并发/双击造成双重审批、矛盾终态
+    res = db.loan.update_one({"_id": ln["_id"], "status": {"$in": [C.LOAN_PENDING, C.LOAN_SUPPLEMENT]}},
+                             {"$set": updates})
+    if res.matched_count == 0:
+        return fail("E-1", "该申请已被处理（请刷新后重试）")
     write_audit(db, user_id=g.user["_id"], action="LOAN_APPROVE", object_type="loan",
                 object_id=contract_no, result=C.RESULT_SUCCESS, detail={"decision": decision})
     ln.update(updates)

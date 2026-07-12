@@ -82,8 +82,8 @@ def deposit():
     d = _body()
     account_no = (d.get("account_no") or "").strip()
     amount = D(d.get("amount") or 0)
-    if amount <= 0:  # E-2
-        return fail("E-2", "存款金额必须大于零")
+    if amount <= 0 or amount > C.TXN_AMOUNT_MAX:  # E-2
+        return fail("E-2", f"存款金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}")
 
     db = get_db()
 
@@ -127,8 +127,8 @@ def withdraw():
     account_no = (d.get("account_no") or "").strip()
     id_no = norm_id(d.get("id_no"))
     amount = D(d.get("amount") or 0)
-    if amount <= 0:
-        return fail("E-AMT", "取款金额必须大于零", 400)
+    if amount <= 0 or amount > C.TXN_AMOUNT_MAX:
+        return fail("E-AMT", f"取款金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}", 400)
 
     db = get_db()
     limit = get_param_dec(db, C.P_WITHDRAW_DAILY_LIMIT, "50000")
@@ -175,8 +175,8 @@ def transfer():
 
     if ttype not in ("INTRA", "INTER"):  # 转账类型必须合法，避免非法值被静默当跨行
         return fail("E-OP", "转账类型非法（本行/跨行）", 400)
-    if amount <= 0:
-        return fail("E-AMT", "转账金额必须大于零", 400)
+    if amount <= 0 or amount > C.TXN_AMOUNT_MAX:
+        return fail("E-AMT", f"转账金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}", 400)
     if ttype == "INTRA" and from_no == to_no:  # E-3 同一账户
         return fail("E-3", "转出与转入不能为同一账户")
 
@@ -331,12 +331,19 @@ def card_op():
         return fail("E-OP", "操作类型非法", 400)
 
     def txn(s):  # 状态变更与审计同事务，保证补卡/挂失一定留痕
-        db.account.update_one({"_id": acc["_id"]}, {"$set": updates}, session=s)
+        # CAS：仅当卡号/卡状态未变才写，防并发双击重复补卡生成两个新卡号
+        res = db.account.update_one({"_id": acc["_id"], "card_no": acc["card_no"], "card_status": cur},
+                                    {"$set": updates}, session=s)
+        if res.matched_count == 0:
+            return ("E-2", "卡状态已变化，请刷新后重试")
         write_audit(db, user_id=g.user["_id"], action=f"CARD_{op}", object_type="account",
                     object_id=account_no, result=C.RESULT_SUCCESS,
                     detail={"old_card": acc["card_no"], "new_card": new_card}, session=s)
+        return None
 
-    run_in_transaction(txn)
+    err = run_in_transaction(txn)
+    if err:
+        return fail(err[0], err[1])
     return ok({"account_no": account_no, "card_no": new_card}, msg)
 
 

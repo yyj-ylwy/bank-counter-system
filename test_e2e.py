@@ -98,6 +98,7 @@ def t_savings():
     ok("102 金额0→E-2 [边界]", E(api("POST", "/api/savings/deposit", S, json={"account_no": a["account_no"], "amount": "0"})) == "E-2")
     ok("102 账户不存在→E-NOACC [判定]", E(api("POST", "/api/savings/deposit", S, json={"account_no": "620000000000", "amount": "100"})) == "E-NOACC")
     ok("102 存款成功 [正常流]", OK(api("POST", "/api/savings/deposit", S, json={"account_no": a["account_no"], "amount": "500"})))
+    ok("102 超金额上限→E-2 [边界]", E(api("POST", "/api/savings/deposit", S, json={"account_no": a["account_no"], "amount": "100000001"})) == "E-2")
     af = open_acct(); set_acct(af["account_no"], status=C.ACCOUNT_FROZEN)
     ok("102 账户冻结→E-FROZEN [条件]", E(api("POST", "/api/savings/deposit", S, json={"account_no": af["account_no"], "amount": "100"})) == "E-FROZEN")
     ac = open_acct(); set_acct(ac["account_no"], status=C.ACCOUNT_CLOSED)
@@ -359,10 +360,13 @@ def t_creditcard():
     # UC-404 还款（有未还账单）
     ok("404 还款方式非法→E-OP [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "XX"})) == "E-OP")
     ok("404 部分金额0→E-AMT [边界]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "PARTIAL", "amount": "0"})) == "E-AMT")
-    ok("404 首笔部分<最低→E-2 [组合]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "PARTIAL", "amount": "1"})) == "E-2")
-    ok("404 首笔部分(≥最低)成功 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "PARTIAL", "amount": "200"})))
-    ok("404 已部分后补小额(<最低)放行 [组合]", OK(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "PARTIAL", "amount": "50"})))
-    ok("404 全额还款成功 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "FULL"})))
+    ok("404 首笔部分<最低→E-2 [组合]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "id_no": cust["id_no"], "repay_type": "PARTIAL", "amount": "1"})) == "E-2")
+    ok("404 缺证件→E-ID [安全]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "PARTIAL", "amount": "200"})) == "E-ID")
+    otheracc = open_acct(bal="5000")
+    ok("404 他人账户还款→E-OWNER [安全]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": otheracc["account_no"], "id_no": cust["id_no"], "repay_type": "PARTIAL", "amount": "200"})) == "E-OWNER")
+    ok("404 首笔部分(≥最低)成功 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "id_no": cust["id_no"], "repay_type": "PARTIAL", "amount": "200"})))
+    ok("404 已部分后补小额(<最低)放行 [组合]", OK(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "id_no": cust["id_no"], "repay_type": "PARTIAL", "amount": "50"})))
+    ok("404 全额还款成功 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "id_no": cust["id_no"], "repay_type": "FULL"})))
     ok("404 无待还账单→E-3 [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "FULL"})) == "E-3")
 
     # UC-406 卡片操作
@@ -414,6 +418,7 @@ def t_admin():
     ok("502b 费率=1边界成功 [边界]", OK(api("POST", "/api/admin/params", AD, json={"param_key": "CC_MIN_REPAY_RATE", "param_value": "1"})))
     ok("502b 限额>1成功(非费率) [组合]", OK(api("POST", "/api/admin/params", AD, json={"param_key": "WITHDRAW_DAILY_LIMIT", "param_value": "60000"})))
     ok("502b 正常保存成功 [正常流]", OK(api("POST", "/api/admin/params", AD, json={"param_key": "TRANSFER_FEE_RATE", "param_value": "0.001"})))
+    ok("502b 买入价>卖出价→E-1 [业务]", E(api("POST", "/api/admin/params", AD, json={"param_key": "FX_USD_BUY", "param_value": "8"})) == "E-1")
     # 503 审计
     ok("503 无筛选查询成功 [正常流]", OK(api("GET", "/api/admin/audit", AD, query={})))
     ok("503 用户不存在→空结果 [组合]", OK(api("GET", "/api/admin/audit", AD, query={"employee_no": "NOPE"})))

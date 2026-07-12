@@ -310,6 +310,7 @@ const OPERATIONS = {
       code: 'UC-404', name: '还款处理', method: 'POST', path: '/api/creditcard/repay',
       fields: [
         { n: 'card_no', label: '信用卡号', required: true }, { n: 'account_no', label: '还款储蓄账号', required: true },
+        { n: 'id_no', label: '证件号', required: true, hint: '核验持卡人身份' },
         { n: 'repay_type', label: '还款方式', type: 'select', options: [{ value: 'FULL', label: '全额还款' }, { value: 'MIN', label: '最低还款' }, { value: 'PARTIAL', label: '部分还款' }] },
         { n: 'amount', label: '还款金额(部分还款填)', type: 'number' },
       ],

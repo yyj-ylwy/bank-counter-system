@@ -94,6 +94,8 @@ def ensure_indexes():
     db.business_transaction.create_index([("txn_no", ASCENDING)], unique=True)
     db.business_transaction.create_index([("account_id", ASCENDING), ("txn_time", ASCENDING)])
     db.business_transaction.create_index([("customer_id", ASCENDING)])
+    # 账单生成按 (related_id, business_type) 汇总未入账流水；加索引避免全表扫描
+    db.business_transaction.create_index([("related_id", ASCENDING), ("business_type", ASCENDING)])
     db.loan.create_index([("contract_no", ASCENDING)], unique=True)
     db.loan.create_index([("customer_id", ASCENDING)])
     db.fx_account.create_index([("fx_account_no", ASCENDING)], unique=True)
@@ -105,8 +107,8 @@ def ensure_indexes():
         db.fx_account.create_index([("customer_id", ASCENDING), ("currency", ASCENDING)], unique=True,
                                    name="uk_fx_customer_currency_active",
                                    partialFilterExpression={"status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}})
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001 - 建索引失败(多为历史重复脏数据)不阻断启动，但必须告警而非静默
+        print(f"[index] 外汇唯一索引创建失败（可能存在同客户同币种重复有效子户，需排查）：{e}")
     db.credit_card.create_index([("card_no", ASCENDING)], unique=True)
     db.credit_card.create_index([("customer_id", ASCENDING)])
     db.credit_card_bill.create_index([("credit_card_id", ASCENDING), ("bill_cycle", ASCENDING)], unique=True)

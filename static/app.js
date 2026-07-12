@@ -104,7 +104,7 @@ function buildSummary(op, values) {
       const opt = f.options.find(o => (typeof o === 'object' ? o.value : o) == v);
       v = opt ? (typeof opt === 'object' ? opt.label : opt) : v;
     } else if (f.type === 'password') v = '••••••';
-    else if (f.type === 'number' && /amount|balance|limit|income/i.test(f.n)) v = money(v);
+    else if (f.type === 'number' && op.code !== 'UC-303' && /amount|balance|limit|income/i.test(f.n)) v = money(v);
     rows.push([f.label, v]);
   }
   // 人民币金额操作附大写（外汇金额为外币，不加）

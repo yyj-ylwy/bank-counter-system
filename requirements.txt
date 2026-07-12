@@ -1,5 +1,12 @@
 Flask==3.0.3
+# 安全相关的传递依赖显式钉死：令牌签名(itsdangerous)、密码哈希/请求处理(Werkzeug)，避免构建不可复现
+Werkzeug==3.0.6
+itsdangerous==2.2.0
+Jinja2==3.1.4
+MarkupSafe==2.1.5
+click==8.1.7
+blinker==1.8.2
 pymongo==4.8.0
 dnspython==2.6.1
 python-dotenv==1.0.1
-gunicorn==22.0.0
+gunicorn==23.0.0

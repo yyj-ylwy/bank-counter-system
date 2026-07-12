@@ -157,6 +157,16 @@ def upsert_param():
     db = get_db()
     existing = db.system_param.find_one({"param_key": key})
     eff_type = existing["param_type"] if existing else ptype
+    # 外汇买卖价一致性：买入价(银行买)不得高于卖出价(银行卖)，否则套利/亏损
+    fx_pair = next(((b, s) for (b, s) in C.PARAM_FX.values() if key in (b, s)), None)
+    if fx_pair:
+        b_key, s_key = fx_pair
+        other = db.system_param.find_one({"param_key": s_key if key == b_key else b_key})
+        if other is not None:
+            ov = float(other["param_value"])
+            buy_v, sell_v = (x, ov) if key == b_key else (ov, x)
+            if buy_v > sell_v:
+                return fail("E-1", f"买入价({buy_v})不能高于卖出价({sell_v})", 400)
     db.system_param.update_one(
         {"param_key": key},
         {"$set": {"param_type": eff_type, "param_value": value,  # 已存在的参数保留原类型，避免被前端覆盖成 OTHER
