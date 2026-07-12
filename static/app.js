@@ -41,7 +41,7 @@ function tbl(rows, cols) {
   if (!rows || !rows.length) return '<p class="hint">无数据</p>';
   const head = '<tr>' + cols.map(c => `<th${c.fmt === money ? ' class="num"' : ''}>${esc(c.label)}</th>`).join('') + '</tr>';
   const body = rows.map(r => '<tr>' + cols.map(c => {
-    const val = c.fmt ? c.fmt(r[c.k]) : r[c.k];
+    const val = c.fmt ? c.fmt(r[c.k], r) : r[c.k];
     const cls = c.fmt === money ? ' class="num"' : '';
     return `<td${cls}>${esc(val)}</td>`;
   }).join('') + '</tr>').join('');

@@ -146,7 +146,7 @@ def upsert_param():
             return fail("E-1", "参数值必须是数字")
     db.system_param.update_one(
         {"param_key": key},
-        {"$set": {"param_type": ptype, "param_value": value,
+        {"$set": {"param_type": eff_type, "param_value": value,  # 已存在的参数保留原类型，避免被前端覆盖成 OTHER
                   "changed_by": g.user["_id"], "changed_at": now()}},
         upsert=True)
     _audit(db, "PARAM_UPDATE", "system_param", key, {"value": value})

@@ -4,6 +4,29 @@
 const ID_TYPES = ['身份证', '护照', '港澳通行证', '军官证'];
 const CURRENCIES = ['USD', 'EUR', 'JPY'];
 
+// 系统参数：把数据库里的英文键/类型翻译成普通人看得懂的中文（面向柜员/管理员，非开发者）
+const PARAM_TYPE_LABEL = { RATE: '利率', LIMIT: '限额', FX_RATE: '汇率', OTHER: '其他' };
+const PARAM_NAME = {
+  FX_USD_BUY: '美元买入价', FX_USD_SELL: '美元卖出价',
+  FX_EUR_BUY: '欧元买入价', FX_EUR_SELL: '欧元卖出价',
+  FX_JPY_BUY: '日元买入价', FX_JPY_SELL: '日元卖出价',
+  LOAN_RATE: '贷款默认年利率', LOAN_OVERDUE_RATE: '逾期日罚息率',
+  WITHDRAW_DAILY_LIMIT: '单日取款上限', TRANSFER_FEE_RATE: '转账手续费率',
+  CC_LIMIT_MAX: '信用卡最高授信额度', CC_MIN_REPAY_RATE: '信用卡最低还款比例',
+  CC_CASH_FEE_RATE: '预借现金手续费率', CC_CASH_DAILY_LIMIT: '预借现金单日上限',
+};
+const PARAM_OPTIONS = Object.entries(PARAM_NAME).map(([value, label]) => ({ value, label }));
+const paramTypeLabel = t => PARAM_TYPE_LABEL[t] || t || '其他';
+const paramName = k => PARAM_NAME[k] || k;
+// 值按类型带单位显示：利率→百分比，限额→元，汇率等原样
+function paramValue(v, row) {
+  if (v == null || v === '') return '';
+  const t = row && row.param_type;
+  if (t === 'RATE') return +(Number(v) * 100).toFixed(4) + '%';
+  if (t === 'LIMIT') return money(v) + ' 元';
+  return v;
+}
+
 // 结果渲染小工具（由 app.js 注入到全局：money / tbl / kv）
 function txnTable(list) {
   return tbl(list, [
@@ -264,15 +287,21 @@ const OPERATIONS = {
     {
       code: 'UC-502', name: '参数列表', method: 'GET', path: '/api/admin/params',
       fields: [],
-      result: d => tbl(d.params, [{ k: 'param_type', label: '类型' }, { k: 'param_key', label: '参数键' }, { k: 'param_value', label: '参数值' }, { k: 'changed_at', label: '修改时间' }]),
+      result: d => tbl(d.params, [
+        { k: 'param_key', label: '参数名称', fmt: paramName },
+        { k: 'param_type', label: '类型', fmt: paramTypeLabel },
+        { k: 'param_value', label: '当前值', fmt: paramValue },
+        { k: 'changed_at', label: '最近修改' },
+      ]),
     },
     {
       code: 'UC-502b', name: '维护参数', method: 'POST', path: '/api/admin/params',
       fields: [
-        { n: 'param_type', label: '参数类型', type: 'select', options: ['RATE', 'LIMIT', 'FX_RATE', 'OTHER'] },
-        { n: 'param_key', label: '参数键', required: true, hint: '如 LOAN_RATE / FX_USD_BUY' },
-        { n: 'param_value', label: '参数值', required: true },
+        { n: 'param_key', label: '选择参数', type: 'select', options: PARAM_OPTIONS },
+        { n: 'param_value', label: '新的值', required: true, hint: '利率填小数（0.0435 表示 4.35%）；限额、汇率直接填数字' },
       ],
+      hint: '选择要调整的参数，填入新值即可；改后立即生效，无需重启',
+      result: d => `<p class="hint">保存成功，可到「参数列表」查看最新值</p>`,
     },
     {
       code: 'UC-503', name: '日志审计', method: 'GET', path: '/api/admin/audit',
