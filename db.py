@@ -107,10 +107,16 @@ def ensure_indexes():
     db.customer.create_index([("customer_no", ASCENDING)], unique=True)
     db.customer.create_index([("id_no", ASCENDING)], unique=True)  # 证件号全局唯一
     db.customer.create_index([("email", ASCENDING)], unique=True, sparse=True)  # 邮箱唯一（仅对已登记邮箱的客户生效）
-    db.customer.create_index([("phone", ASCENDING)])
+    db.customer.create_index([("phone", ASCENDING)], unique=True, sparse=True)  # 手机号全局唯一（选填）
     db.account.create_index([("account_no", ASCENDING)], unique=True)
     db.account.create_index([("card_no", ASCENDING)], unique=True)
-    db.account.create_index([("customer_id", ASCENDING)])
+    # 客户↔账户 1:1：同一客户只能有一个在用（非销户）储蓄账户
+    # 先删旧的非唯一索引（历史遗留），再建 partial unique，避免同字段重复索引
+    if "customer_id_1" in [ix["name"] for ix in db.account.list_indexes()]:
+        db.account.drop_index("customer_id_1")
+    db.account.create_index([("customer_id", ASCENDING)], unique=True,
+                            name="uk_account_customer_active",
+                            partialFilterExpression={"status": {"$ne": C.ACCOUNT_CLOSED}})
     db.business_transaction.create_index([("txn_no", ASCENDING)], unique=True)
     db.business_transaction.create_index([("account_id", ASCENDING), ("txn_time", ASCENDING)])
     db.business_transaction.create_index([("customer_id", ASCENDING)])

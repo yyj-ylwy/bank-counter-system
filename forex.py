@@ -196,7 +196,7 @@ def live_rate():
 def open_subaccount():
     d = _body()
     db = get_db()
-    cust = find_customer(db, ident=(d.get("ident") or d.get("id_no") or d.get("customer_no") or "").strip() or None)
+    cust = find_customer(db, ident=(d.get("ident") or "").strip() or None)
     if not cust:
         return fail("E-NOCUST", "未找到客户")
     currency = (d.get("currency") or "").strip().upper()
@@ -233,7 +233,7 @@ def open_subaccount():
 @clerk
 def trade():
     d = _body()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户（归属自动成立）
+    ident = (d.get("ident") or "").strip()
     currency = (d.get("currency") or "").strip().upper()      # 币种：定位该客户对应外汇子户
     direction = (d.get("direction") or "").strip().upper()  # BUY=客户买入外币 / SELL=客户卖出外币
     foreign = D(d.get("amount") or 0)  # 外币金额
@@ -243,7 +243,7 @@ def trade():
         return fail("E-AMT", "外币金额必须大于零", 400)
 
     db = get_db()
-    fx, ferr = resolve_fx_account(db, ident, currency, d.get("fx_account_no"))  # 免输子户号，凭身份+币种定位
+    fx, ferr = resolve_fx_account(db, ident, currency)  # 凭任意身份标识+币种定位外汇子户
     if ferr:
         return fail(ferr[0], ferr[1])
     fx_no = fx["fx_account_no"]
@@ -367,19 +367,18 @@ def change():
 @clerk
 def query():
     db = get_db()
-    fx_no = (request.args.get("fx_account_no") or "").strip()
-    ident = (request.args.get("ident") or request.args.get("id_no")
-             or request.args.get("customer_no") or "").strip()  # 邮箱/证件号/客户号 任一
+    ident = (request.args.get("ident") or "").strip()
 
     fx_accounts = []
-    if fx_no:
-        fx = db.fx_account.find_one({"fx_account_no": fx_no})
+    if ident:
+        # ident 可能是外汇子户号
+        fx = db.fx_account.find_one({"fx_account_no": ident})
         if fx:
             fx_accounts = [fx]
-    else:
-        cust = find_customer(db, ident=ident or None)
-        if cust:
-            fx_accounts = list(db.fx_account.find({"customer_id": cust["_id"]}))
+        else:
+            cust = find_customer(db, ident=ident or None)
+            if cust:
+                fx_accounts = list(db.fx_account.find({"customer_id": cust["_id"]}))
     if not fx_accounts:  # E-1
         return fail("E-1", "未找到外汇账户")
 
@@ -406,6 +405,6 @@ def query():
         hist.append(v)
 
     write_audit(db, user_id=g.user["_id"], action="FX_QUERY", object_type="fx_account",
-                object_id=fx_no or customer_no or id_no, result=C.RESULT_SUCCESS)
+                object_id=ident or "-", result=C.RESULT_SUCCESS)
     return ok({"fx_accounts": views, "history": hist,
                "hint": None if hist else "该时段无外汇交易记录"})

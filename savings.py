@@ -98,13 +98,13 @@ def open_account():
 @clerk
 def deposit():
     d = _body()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户
+    ident = (d.get("ident") or "").strip()
     amount = D(d.get("amount") or 0)
     if amount <= 0 or amount > C.TXN_AMOUNT_MAX:  # E-2
         return fail("E-2", f"存款金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}")
 
     db = get_db()
-    account_no, _cust, rerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号
+    account_no, _cust, rerr = resolve_account_no(db, ident)  # 凭任意身份标识定位账户
     if rerr:
         return fail(rerr[0], rerr[1])
 
@@ -145,13 +145,13 @@ def _today_withdrawn(db, account_id, session=None):
 @clerk
 def withdraw():
     d = _body()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位并核验（归属自动成立）
+    ident = (d.get("ident") or "").strip()
     amount = D(d.get("amount") or 0)
     if amount <= 0 or amount > C.TXN_AMOUNT_MAX:
         return fail("E-AMT", f"取款金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}", 400)
 
     db = get_db()
-    account_no, _cust, rerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号，凭身份定位
+    account_no, _cust, rerr = resolve_account_no(db, ident)  # 凭任意身份标识定位账户
     if rerr:
         return fail(rerr[0], rerr[1])
     limit = get_param_dec(db, C.P_WITHDRAW_DAILY_LIMIT, "50000")
@@ -185,10 +185,10 @@ def withdraw():
 def transfer():
     d = _body()
     ttype = (d.get("transfer_type") or "INTRA").strip().upper()  # INTRA=行内, INTER=跨行
-    to_no = (d.get("to_account_no") or "").strip()
-    to_ident = (d.get("to_ident") or "").strip()  # 收款方 证件号/邮箱（本行转账，免输收款账号）
+    to_ident = (d.get("to_ident") or "").strip()  # 收款方身份标识（本行）
+    to_no = (d.get("to_account_no") or "").strip()  # 跨行收款账号（行外系统，非本行身份标识）
     to_bank = (d.get("to_bank") or "").strip()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 转出方 证件号或邮箱，二选一定位并核验（归属自动成立）
+    ident = (d.get("ident") or "").strip()  # 转出方身份标识
     amount = D(d.get("amount") or 0)
 
     if ttype not in ("INTRA", "INTER"):  # 转账类型必须合法，避免非法值被静默当跨行
@@ -197,16 +197,17 @@ def transfer():
         return fail("E-AMT", f"转账金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}", 400)
 
     db = get_db()
-    from_no, _c, rerr = resolve_account_no(db, ident, d.get("from_account_no"))  # 转出方免输账号
+    from_no, _c, rerr = resolve_account_no(db, ident)  # 凭任意身份标识定位转出账户
     if rerr:
         return fail(rerr[0], rerr[1])
-    if ttype == "INTRA":  # 本行转账：收款方也凭 证件号/邮箱 定位账户（免输收款账号）
+    if ttype == "INTRA":  # 本行转账：收款方也凭身份标识定位账户
+        to_no = None
         if to_ident:
-            to_no, _tc, terr = resolve_account_no(db, to_ident, to_no or None)
+            to_no, _tc, terr = resolve_account_no(db, to_ident)
             if terr:
                 return fail("E-1", f"收款方定位失败：{terr[1]}")
         if not to_no:
-            return fail("E-1", "本行转账请填写收款方 证件号/邮箱（或收款账号）")
+            return fail("E-1", "本行转账请填写收款方身份标识")
         if from_no == to_no:  # E-3 同一账户
             return fail("E-3", "转出与转入不能为同一账户")
     fee_rate = get_param_dec(db, C.P_TRANSFER_FEE_RATE, "0.001")
@@ -268,17 +269,16 @@ def transfer():
 @bp.get("/query")
 @clerk
 def query():
-    key = (request.args.get("key") or request.args.get("account_no") or request.args.get("ident")
-           or request.args.get("id_no") or "").strip()  # 账户 / 证件号 / 邮箱 任一
+    ident = (request.args.get("ident") or "").strip()
     start = request.args.get("start")
     end = request.args.get("end")
 
     db = get_db()
-    acc = db.account.find_one({"account_no": key}) if key else None  # 先按账户号
+    acc = db.account.find_one({"account_no": ident}) if ident else None  # 先按账号
     if acc:
         cust = db.customer.find_one({"_id": acc["customer_id"]})
-    else:  # 再按 证件号 / 邮箱 / 客户号 定位客户及其账户
-        cust = find_customer(db, ident=key or None)
+    else:  # 再按任意身份标识定位客户及其账户
+        cust = find_customer(db, ident=ident or None)
         acc = db.account.find_one({"customer_id": cust["_id"]}) if cust else None
 
     if not cust or not acc:  # E-1 未找到
@@ -312,11 +312,11 @@ def query():
 @clerk
 def card_op():
     d = _body()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位并核验（归属自动成立）
+    ident = (d.get("ident") or "").strip()
     op = (d.get("op") or "").strip().upper()  # LOSS 挂失 / UNLOSS 解挂 / REISSUE 补卡
 
     db = get_db()
-    account_no, cust, rerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号，凭身份定位其账户
+    account_no, cust, rerr = resolve_account_no(db, ident)  # 凭任意身份标识定位账户
     if rerr:
         return fail(rerr[0], rerr[1])
     acc = db.account.find_one({"account_no": account_no})  # 归属已由 resolve 保证
@@ -359,10 +359,10 @@ def card_op():
 @clerk
 def close_account():
     d = _body()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位并核验（归属自动成立）
+    ident = (d.get("ident") or "").strip()
 
     db = get_db()
-    account_no, cust, rerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号，凭身份定位其账户
+    account_no, cust, rerr = resolve_account_no(db, ident)  # 凭任意身份标识定位账户
     if rerr:
         return fail(rerr[0], rerr[1])
     acc = db.account.find_one({"account_no": account_no})  # 归属已由 resolve 保证
@@ -422,14 +422,12 @@ def close_account():
 @clerk
 def update_customer():
     d = _body()
-    ident = (d.get("ident") or d.get("id_no") or d.get("customer_no") or "").strip()  # 邮箱/证件号定位并核验
+    ident = (d.get("ident") or "").strip()
     db = get_db()
 
     cust = find_customer(db, ident=ident or None)
     if not cust:  # E-1
         return fail("E-1", "客户不存在，请重新输入查询条件")
-    if not match_identity(cust, ident):  # E-2 身份核验失败（信息更新须以邮箱/证件号核验）
-        return fail("E-2", "身份核验失败")
 
     updates = {}
     old = {}

@@ -83,14 +83,13 @@ def loan_view(db, ln, with_customer=True):
 def apply():
     d = _body()
     db = get_db()
-    cust = find_customer(db, ident=(d.get("ident") or d.get("id_no") or d.get("customer_no") or "").strip() or None)
+    cust = find_customer(db, ident=(d.get("ident") or "").strip() or None)
     if not cust:
         return fail("E-NOCUST", "未找到客户，请先核对客户信息")
 
     loan_type = (d.get("loan_type") or "").strip()
     amount = D(d.get("amount") or 0)
     term = as_int(d.get("term_months"))
-    account_no = (d.get("account_no") or "").strip()
     if loan_type not in C.LOAN_TYPES:  # E-2 类型非法
         return fail("E-2", "贷款类型非法")
     if amount <= 0 or amount > C.LOAN_AMOUNT_MAX:  # E-2 金额范围
@@ -108,12 +107,9 @@ def apply():
             {"status": C.LOAN_ACTIVE, "due_date": {"$lt": today0}, "balance": {"$gt": m(0)}}]}):
         return fail("E-1", "客户存在逾期贷款，拒绝办理")
 
-    if account_no:  # 指定账户必须属于本客户且状态正常，杜绝把贷款打进他人账户
-        acc = db.account.find_one({"account_no": account_no, "customer_id": cust["_id"], "status": C.ACCOUNT_NORMAL})
-    else:
-        acc = db.account.find_one({"customer_id": cust["_id"], "status": C.ACCOUNT_NORMAL})
+    acc = db.account.find_one({"customer_id": cust["_id"], "status": C.ACCOUNT_NORMAL})
     if not acc:
-        return fail("E-NOACC", "客户没有可用的正常储蓄账户，或指定账户不属于该客户")
+        return fail("E-NOACC", "客户没有可用的正常储蓄账户")
 
     ln = {
         "contract_no": new_contract_no(),
@@ -251,18 +247,17 @@ def _acc_no(db, ln):
 @clerk
 def repay():
     d = _body()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户（归属自动成立）
+    ident = (d.get("ident") or "").strip()
     amount = D(d.get("amount") or 0)
     if amount <= 0:
         return fail("E-AMT", "还款金额必须大于零", 400)
 
     db = get_db()
-    ln, cust, rerr = resolve_loan(db, ident, d.get("contract_no"),
-                                  statuses=[C.LOAN_ACTIVE, C.LOAN_OVERDUE])  # 免输合同号，凭身份定位存续贷款
+    ln, cust, rerr = resolve_loan(db, ident, statuses=[C.LOAN_ACTIVE, C.LOAN_OVERDUE])
     if rerr:
         return fail(rerr[0], rerr[1])
     contract_no = ln["contract_no"]
-    repay_no, _c, aerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号，凭身份定位还款储蓄账户
+    repay_no, _c, aerr = resolve_account_no(db, ident)  # 凭任意身份标识定位还款储蓄账户
     if aerr:
         return fail(aerr[0], aerr[1])
     # 逾期罚息日利率（可能未维护）：仅在贷款确实逾期时才要求存在，避免正常还款被参数缺失阻断
@@ -324,15 +319,17 @@ def repay():
 def overdue_list():
     db = get_db()
     days = max(0, int(request.args.get("days") or 0))  # 负数当作不过滤，避免过滤条件被静默忽略
-    customer_no = (request.args.get("customer_no") or "").strip()
-    contract_no = (request.args.get("contract_no") or "").strip()
+    ident = (request.args.get("ident") or "").strip()
 
     q = {"status": {"$in": [C.LOAN_ACTIVE, C.LOAN_OVERDUE]}, "balance": {"$gt": m(0)}}
-    if contract_no:
-        q["contract_no"] = contract_no
-    if customer_no:
-        cust = db.customer.find_one({"customer_no": customer_no})
-        q["customer_id"] = cust["_id"] if cust else None
+    if ident:
+        # ident 可能是合同号或客户身份标识
+        ln = db.loan.find_one({"contract_no": ident})
+        if ln:
+            q["contract_no"] = ident
+        else:
+            cust = find_customer(db, ident=ident)
+            q["customer_id"] = cust["_id"] if cust else None
 
     # 注意：不能用 get_param_dec(..., None)，因为 dec(None) 会把缺失值变成 Decimal(0)，
     # 导致“参数缺失应报错”分支永远走不到、罚息被静默算成 0。先判存在性，再转 Decimal。
@@ -395,11 +392,14 @@ def overdue_record():
 def query():
     db = get_db()
     q = {}
-    if request.args.get("customer_no"):
-        cust = db.customer.find_one({"customer_no": request.args["customer_no"].strip()})
-        q["customer_id"] = cust["_id"] if cust else None
-    if request.args.get("contract_no"):
-        q["contract_no"] = request.args["contract_no"].strip()
+    ident = (request.args.get("ident") or "").strip()
+    if ident:
+        ln = db.loan.find_one({"contract_no": ident})
+        if ln:
+            q["contract_no"] = ident
+        else:
+            cust = find_customer(db, ident=ident)
+            q["customer_id"] = cust["_id"] if cust else None
     if request.args.get("status"):
         q["status"] = request.args["status"].strip().upper()
     if request.args.get("loan_type"):

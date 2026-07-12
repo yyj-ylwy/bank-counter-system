@@ -96,24 +96,23 @@ const OPERATIONS = {
     },
     {
       code: 'UC-102', name: '柜台存款', method: 'POST', path: '/api/savings/deposit',
-      fields: [{ n: 'ident', label: '邮箱或证件号', required: true, hint: '凭身份定位客户账户，免输账号' }, { n: 'amount', label: '存款金额', type: 'number', required: true }, { n: 'account_no', label: '账号', hint: '该客户有多个账户时才需指定' }],
+      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }, { n: 'amount', label: '存款金额', type: 'number', required: true }],
       result: d => kv({ '当前余额': money(d.balance), '流水号': d.txn.txn_no }),
     },
     {
       code: 'UC-103', name: '柜台取款', method: 'POST', path: '/api/savings/withdraw',
-      fields: [{ n: 'ident', label: '邮箱或证件号', required: true, hint: '凭身份定位客户账户，免输账号' }, { n: 'amount', label: '取款金额', type: 'number', required: true }, { n: 'account_no', label: '账号', hint: '该客户有多个账户时才需指定' }],
+      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }, { n: 'amount', label: '取款金额', type: 'number', required: true }],
       result: d => kv({ '当前余额': money(d.balance), '流水号': d.txn.txn_no }),
     },
     {
       code: 'UC-104', name: '转账汇款', method: 'POST', path: '/api/savings/transfer',
       fields: [
         { n: 'transfer_type', label: '转账类型', type: 'select', options: [{ value: 'INTRA', label: '本行转账（含本人账户互转）' }, { value: 'INTER', label: '跨行转账' }] },
-        { n: 'ident', label: '转出方 邮箱或证件号', required: true, hint: '凭身份定位转出账户，免输账号' },
-        { n: 'to_ident', label: '收款方 邮箱或证件号', hint: '本行转账：凭收款方身份定位其账户，免输收款账号' },
-        { n: 'to_account_no', label: '收款账号', hint: '跨行转账必填；本行转账可留空（用收款方身份定位）' },
+        { n: 'ident', label: '转出方 身份标识', required: true, hint: '证件号/邮箱/手机号/账号，任填其一' },
+        { n: 'to_ident', label: '收款方 身份标识', hint: '本行转账：凭收款方任意身份标识定位其账户' },
+        { n: 'to_account_no', label: '收款账号', hint: '跨行转账必填（行外账号）；本行转账可留空（用收款方身份定位）' },
         { n: 'to_bank', label: '收款方开户银行', hint: '仅跨行转账需填写' },
         { n: 'amount', label: '转账金额', type: 'number', required: true },
-        { n: 'from_account_no', label: '转出账号', hint: '转出方有多个账户时才需指定' },
       ],
       result: d => kv({ '转账方式': d.sub, '手续费': money(d.fee), '转出后余额': money(d.balance), '流水号': d.txn.txn_no }),
       validate: v => v.transfer_type === 'INTER' ? (!v.to_account_no ? '跨行转账请填写收款账号' : (!v.to_bank ? '跨行转账请填写收款方开户银行' : null)) : ((!v.to_ident && !v.to_account_no) ? '本行转账请填写收款方 邮箱/证件号（或收款账号）' : null),
@@ -121,10 +120,10 @@ const OPERATIONS = {
     {
       code: 'UC-105', name: '账户/明细查询', method: 'GET', path: '/api/savings/query',
       fields: [
-        { n: 'key', label: '账户/证件号/邮箱', required: true, hint: '账户号、证件号或注册邮箱，任填其一' },
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
         { n: 'start', label: '起始日期', type: 'date' }, { n: 'end', label: '结束日期', type: 'date' },
       ],
-      hint: '按 账户 / 证件号 / 邮箱 任一查询',
+      hint: '按任意身份标识查询',
       result: d => kv({ '客户': d.customer.name + ' (' + d.customer.customer_no + ')', '账号': d.account.account_no, '余额': money(d.account.balance), '账户状态': d.account.status_label, '卡状态': d.account.card_status_label })
         + (d.account.note ? `<p class="hint">${d.account.note}</p>` : '')
         + '<h4>交易明细</h4>' + (d.transactions.length ? txnTable(d.transactions) : `<p class="hint">${d.empty_hint || '无明细'}</p>`),
@@ -132,20 +131,19 @@ const OPERATIONS = {
     {
       code: 'UC-106', name: '挂失/解挂/补卡', method: 'POST', path: '/api/savings/card',
       fields: [
-        { n: 'ident', label: '邮箱或证件号', required: true, hint: '凭身份定位客户账户，免输账号' },
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
         { n: 'op', label: '操作', type: 'select', options: [{ value: 'LOSS', label: '挂失' }, { value: 'UNLOSS', label: '解挂' }, { value: 'REISSUE', label: '补卡' }] },
-        { n: 'account_no', label: '账号', hint: '该客户有多个账户时才需指定' },
       ],
       result: d => kv({ '账号': d.account_no, '当前卡号': d.card_no }),
     },
     {
       code: 'UC-107', name: '销户处理', method: 'POST', path: '/api/savings/close-account',
-      fields: [{ n: 'ident', label: '邮箱或证件号', required: true, hint: '凭身份定位客户账户，免输账号' }, { n: 'account_no', label: '账号', hint: '该客户有多个账户时才需指定' }],
+      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }],
     },
     {
       code: 'UC-108', name: '客户信息更新', method: 'POST', path: '/api/savings/update-customer',
       fields: [
-        { n: 'ident', label: '邮箱或证件号', required: true, hint: '定位并核验客户（证件号或注册邮箱）' },
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
         { n: 'phone', label: '新手机号', pattern: '1[3-9]\\d{9}', patternMsg: '手机号应为 11 位大陆手机号' }, { n: 'address', label: '新联系地址' }, { n: 'occupation', label: '职业' }, { n: 'email', label: '新邮箱' },
         { n: 'name', label: '变更姓名（重要信息）', hint: '修改姓名/证件号须勾选下方“二次确认”' }, { n: 'new_id_no', label: '变更证件号（重要信息）' },
         { n: 'confirm', label: '二次确认关键信息变更', type: 'checkbox' }, { n: 'reason', label: '变更原因' },
@@ -159,11 +157,10 @@ const OPERATIONS = {
     {
       code: 'UC-201', name: '贷款申请办理', method: 'POST', path: '/api/loan/apply',
       fields: [
-        { n: 'ident', label: '邮箱/证件号/客户号', hint: '任填其一定位客户' },
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
         { n: 'loan_type', label: '贷款类型', type: 'select', options: ['个人消费贷', '住房贷款', '经营贷款', '汽车贷款'] },
         { n: 'amount', label: '申请金额', type: 'number', required: true },
         { n: 'term_months', label: '期限(月)', type: 'number', required: true },
-        { n: 'account_no', label: '放款/还款账号', hint: '留空取客户默认账户' },
         { n: 'purpose', label: '借款用途' },
         { n: 'guarantee', label: '担保方式', type: 'select', options: [{ value: '', label: '（可不填）' }, '信用', '抵押', '质押', '保证'] },
       ],
@@ -195,12 +192,12 @@ const OPERATIONS = {
     },
     {
       code: 'UC-204', name: '还款登记', method: 'POST', path: '/api/loan/repay',
-      fields: [{ n: 'ident', label: '邮箱或证件号', required: true, hint: '凭身份定位客户存续贷款与还款账户' }, { n: 'amount', label: '还款金额', type: 'number', required: true }, { n: 'contract_no', label: '合同号', hint: '该客户有多笔存续贷款时才需指定' }, { n: 'account_no', label: '还款账号', hint: '该客户有多个账户时才需指定' }],
+      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号/合同号，任填其一' }, { n: 'amount', label: '还款金额', type: 'number', required: true }],
       result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余本金': money(d.loan.balance), '应收罚息': money(d.loan.penalty_due) }),
     },
     {
       code: 'UC-205', name: '逾期查询', method: 'GET', path: '/api/loan/overdue',
-      fields: [{ n: 'days', label: '逾期天数不少于', type: 'number', hint: '留空查全部逾期' }, { n: 'customer_no', label: '客户号' }, { n: 'contract_no', label: '合同号' }],
+      fields: [{ n: 'days', label: '逾期天数不少于', type: 'number', hint: '留空查全部逾期' }, { n: 'ident', label: '身份标识', hint: '证件号/邮箱/手机号/账号/合同号，留空查全部' }],
       result: d => d.loans.length ? tbl(d.loans, [
         { k: 'contract_no', label: '合同号' }, { k: 'balance', label: '剩余应还', fmt: money },
         { k: 'overdue_days', label: '逾期天数' }, { k: 'penalty', label: '罚息', fmt: money }, { k: 'status_label', label: '状态' },
@@ -215,7 +212,7 @@ const OPERATIONS = {
     {
       code: 'UC-206', name: '贷款查询统计', method: 'GET', path: '/api/loan/query',
       fields: [
-        { n: 'customer_no', label: '客户号' }, { n: 'contract_no', label: '合同号' },
+        { n: 'ident', label: '身份标识', hint: '证件号/邮箱/手机号/账号/合同号，留空查全部' },
         { n: 'status', label: '状态', type: 'select', options: [{ value: '', label: '全部' }, { value: 'PENDING', label: '待审核' }, { value: 'APPROVED', label: '已批复' }, { value: 'ACTIVE', label: '存续中' }, { value: 'OVERDUE', label: '逾期' }, { value: 'PAID_OFF', label: '已结清' }, { value: 'REJECTED', label: '已拒绝' }, { value: 'SUPPLEMENT', label: '待补件' }] },
         { n: 'loan_type', label: '贷款类型' }, { n: 'start', label: '起始日期', type: 'date' }, { n: 'end', label: '结束日期', type: 'date' },
       ],
@@ -228,7 +225,7 @@ const OPERATIONS = {
   FOREX_CLERK: [
     {
       code: 'UC-301', name: '外汇账户开立', method: 'POST', path: '/api/forex/open-subaccount',
-      fields: [{ n: 'ident', label: '邮箱/证件号/客户号', hint: '任填其一定位客户' }, { n: 'currency', label: '外币币种', type: 'select', options: CURRENCIES }],
+      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }, { n: 'currency', label: '外币币种', type: 'select', options: CURRENCIES }],
       result: d => kv({ '外汇账号': d.fx_account.fx_account_no, '币种': d.fx_account.currency, '关联储蓄账号': d.fx_account.base_account_no }),
     },
     {
@@ -248,11 +245,10 @@ const OPERATIONS = {
     {
       code: 'UC-303', name: '外汇买卖确认', method: 'POST', path: '/api/forex/trade',
       fields: [
-        { n: 'ident', label: '邮箱或证件号', required: true, hint: '凭身份定位客户外汇账户，免输子户号' },
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号/外汇子户号，任填其一' },
         { n: 'currency', label: '外币币种', type: 'select', options: CURRENCIES, required: true },
         { n: 'direction', label: '方向', type: 'select', options: [{ value: 'BUY', label: '客户买入外币' }, { value: 'SELL', label: '客户卖出外币' }] },
         { n: 'amount', label: '外币金额', type: 'number', required: true },
-        { n: 'fx_account_no', label: '外汇账号', hint: '该客户同币种有多个子户时才需指定' },
       ],
       result: d => kv({ '本币金额': money(d.cny_amount), '汇率': d.rate + '（' + fxRateType(d.rate_type) + '）', '流水号': d.txn.txn_no }),
     },
@@ -267,7 +263,7 @@ const OPERATIONS = {
     },
     {
       code: 'UC-305', name: '余额与历史查询', method: 'GET', path: '/api/forex/query',
-      fields: [{ n: 'fx_account_no', label: '外汇账号' }, { n: 'ident', label: '邮箱/证件号/客户号' }, { n: 'start', label: '起始日期', type: 'date' }, { n: 'end', label: '结束日期', type: 'date' }],
+      fields: [{ n: 'ident', label: '身份标识', hint: '证件号/邮箱/手机号/账号/卡号/外汇子户号，任填其一' }, { n: 'start', label: '起始日期', type: 'date' }, { n: 'end', label: '结束日期', type: 'date' }],
       result: d => tbl(d.fx_accounts, [{ k: 'fx_account_no', label: '外汇账号' }, { k: 'customer_name', label: '客户' }, { k: 'currency', label: '币种' }, { k: 'balance', label: '余额', fmt: money }, { k: 'status_label', label: '状态' }, { k: 'base_account_no', label: '关联储蓄账号' }])
         + '<h4>交易历史</h4>' + (d.history.length ? tbl(d.history, [{ k: 'txn_time', label: '时间' }, { k: 'business_label', label: '类型' }, { k: 'currency', label: '币种' }, { k: 'amount', label: '外币金额', fmt: money }, { k: 'fx_rate', label: '汇率' }, { k: 'cny_amount', label: '本币金额', fmt: money }]) : `<p class="hint">${d.hint || '无记录'}</p>`),
     },
@@ -277,7 +273,7 @@ const OPERATIONS = {
   CREDIT_CARD_CLERK: [
     {
       code: 'UC-401', name: '信用卡申请办理', method: 'POST', path: '/api/creditcard/apply',
-      fields: [{ n: 'ident', label: '邮箱/证件号/客户号', hint: '任填其一定位客户' }, { n: 'card_type', label: '卡片类型', type: 'select', options: ['普卡', '金卡', '白金卡'] }, { n: 'occupation', label: '职业' }, { n: 'monthly_income', label: '月收入', type: 'number' }],
+      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }, { n: 'card_type', label: '卡片类型', type: 'select', options: ['普卡', '金卡', '白金卡'] }, { n: 'occupation', label: '职业' }, { n: 'monthly_income', label: '月收入', type: 'number' }],
       result: d => kv({ '卡号': d.credit_card.card_no, '状态': d.credit_card.status_label }),
     },
     {
@@ -303,32 +299,29 @@ const OPERATIONS = {
     {
       code: 'UC-404', name: '还款处理', method: 'POST', path: '/api/creditcard/repay',
       fields: [
-        { n: 'ident', label: '邮箱或证件号', required: true, hint: '凭身份定位信用卡与还款账户，免输卡号/账号' },
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
         { n: 'repay_type', label: '还款方式', type: 'select', options: [{ value: 'FULL', label: '全额还款' }, { value: 'MIN', label: '最低还款' }, { value: 'PARTIAL', label: '部分还款' }] },
         { n: 'amount', label: '还款金额(部分还款填)', type: 'number' },
-        { n: 'card_no', label: '信用卡号', hint: '该客户有多张卡时才需指定' },
-        { n: 'account_no', label: '还款储蓄账号', hint: '该客户有多个账户时才需指定' },
       ],
       result: d => kv({ '账期': billCycle(d.bill.bill_cycle), '账单状态': d.bill.status_label, '已还': money(d.bill.paid_amount), '剩余': money(d.bill.remaining), '可用额度': money(d.credit_card.available_limit) }),
     },
     {
       code: 'UC-405', name: '预借现金处理', method: 'POST', path: '/api/creditcard/cash-advance',
-      fields: [{ n: 'ident', label: '邮箱或证件号', required: true, hint: '凭身份定位信用卡，免输卡号' }, { n: 'amount', label: '取现金额', type: 'number', required: true }, { n: 'payout_account', label: '转入储蓄账号', hint: '留空表示以现金支付' }, { n: 'card_no', label: '信用卡号', hint: '该客户有多张卡时才需指定' }],
+      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }, { n: 'amount', label: '取现金额', type: 'number', required: true }, { n: 'payout_account', label: '转入储蓄账号', hint: '留空表示以现金支付' }],
       result: d => kv({ '手续费': money(d.fee), '出款方式': d.payout, '剩余可用额度': money(d.available_limit), '流水号': d.txn.txn_no }),
     },
     {
       code: 'UC-406', name: '挂失/补卡/异常', method: 'POST', path: '/api/creditcard/card',
       fields: [
-        { n: 'ident', label: '邮箱或证件号', required: true, hint: '凭身份定位信用卡，免输卡号' },
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
         { n: 'op', label: '操作', type: 'select', options: [{ value: 'LOSS', label: '挂失' }, { value: 'REISSUE', label: '补卡' }, { value: 'FREEZE', label: '冻结' }, { value: 'UNFREEZE', label: '解冻' }, { value: 'EXCEPTION', label: '异常登记' }] },
         { n: 'note', label: '异常说明' },
-        { n: 'card_no', label: '信用卡号', hint: '该客户有多张卡时才需指定' },
       ],
       result: d => d.card_no ? kv({ '当前卡号': d.card_no }) : '',
     },
     {
       code: 'UC-4Q', name: '信用卡查询', method: 'GET', path: '/api/creditcard/query',
-      fields: [{ n: 'card_no', label: '信用卡号' }, { n: 'ident', label: '邮箱/证件号/客户号' }],
+      fields: [{ n: 'ident', label: '身份标识', hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }],
       result: d => d.cards.map(c => kv({ '卡号': c.card_no, '客户': c.customer_name || '-', '状态': c.status_label, '授信额度': money(c.credit_limit), '可用额度': money(c.available_limit), '已用额度': money(c.used), '可用还款/出款账号': (c.repay_accounts && c.repay_accounts.length ? c.repay_accounts.join('、') : '（该客户暂无正常储蓄账户）') })
         + (c.bills.length ? '<h4>账单</h4>' + tbl(c.bills, [{ k: 'bill_cycle', label: '账期', fmt: billCycle }, { k: 'total_amount', label: '应还', fmt: money }, { k: 'paid_amount', label: '已还', fmt: money }, { k: 'status_label', label: '状态' }]) : '')).join('<hr>'),
     },

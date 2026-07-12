@@ -75,7 +75,7 @@ def _oldest_unpaid_bill(db, cc_id, session=None):
 def apply():
     d = _body()
     db = get_db()
-    cust = find_customer(db, ident=(d.get("ident") or d.get("id_no") or d.get("customer_no") or "").strip() or None)
+    cust = find_customer(db, ident=(d.get("ident") or "").strip() or None)
     if not cust:
         return fail("E-NOCUST", "未找到客户")
     if cust["status"] == C.CUSTOMER_BLACKLIST:  # E-1 严重不良记录
@@ -230,16 +230,16 @@ def generate_bill():
 @clerk
 def repay():
     d = _body()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户（归属自动成立）
+    ident = (d.get("ident") or "").strip()
     repay_type = (d.get("repay_type") or "PARTIAL").strip().upper()  # FULL/MIN/PARTIAL
     if repay_type not in ("FULL", "MIN", "PARTIAL"):  # 拼错不再静默当部分还款
         return fail("E-OP", "还款方式非法（全额/最低/部分）", 400)
     db = get_db()
-    cc, cust, rerr = resolve_credit_card(db, ident, d.get("card_no"))  # 免输卡号，凭身份定位信用卡
+    cc, cust, rerr = resolve_credit_card(db, ident)  # 凭任意身份标识定位信用卡
     if rerr:
         return fail(rerr[0], rerr[1])
     card_no = cc["card_no"]
-    account_no, _c, aerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号，凭身份定位还款储蓄账户
+    account_no, _c, aerr = resolve_account_no(db, ident)  # 凭任意身份标识定位还款储蓄账户
     if aerr:
         return fail(aerr[0], aerr[1])
     bill = _oldest_unpaid_bill(db, cc["_id"])  # 优先还最早未清账单
@@ -321,14 +321,14 @@ def _today_cash(db, cc_id, session=None):
 @clerk
 def cash_advance():
     d = _body()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户（归属自动成立）
+    ident = (d.get("ident") or "").strip()
     amount = D(d.get("amount") or 0)
     payout_account = (d.get("payout_account") or "").strip()  # 空=现金，否则转入该储蓄账户
     if amount <= 0:
         return fail("E-AMT", "取现金额必须大于零", 400)
 
     db = get_db()
-    cc, cust, rerr = resolve_credit_card(db, ident, d.get("card_no"))  # 免输卡号，凭身份定位信用卡
+    cc, cust, rerr = resolve_credit_card(db, ident)  # 凭任意身份标识定位信用卡
     if rerr:
         return fail(rerr[0], rerr[1])
     card_no = cc["card_no"]
@@ -388,10 +388,10 @@ def cash_advance():
 @clerk
 def card_op():
     d = _body()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户（归属自动成立）
+    ident = (d.get("ident") or "").strip()
     op = (d.get("op") or "").strip().upper()  # LOSS/REISSUE/FREEZE/UNFREEZE/EXCEPTION
     db = get_db()
-    cc, cust, rerr = resolve_credit_card(db, ident, d.get("card_no"))  # 免输卡号，凭身份定位信用卡
+    cc, cust, rerr = resolve_credit_card(db, ident)  # 凭任意身份标识定位信用卡
     if rerr:
         return fail(rerr[0], rerr[1])
     card_no = cc["card_no"]
@@ -454,18 +454,17 @@ def card_op():
 @clerk
 def query():
     db = get_db()
-    card_no = (request.args.get("card_no") or "").strip()
-    ident = (request.args.get("ident") or request.args.get("id_no")
-             or request.args.get("customer_no") or "").strip()  # 邮箱/证件号/客户号 任一
+    ident = (request.args.get("ident") or "").strip()
     cards = []
-    if card_no:
-        cc = db.credit_card.find_one({"card_no": card_no})
+    if ident:
+        # ident 可能是信用卡号
+        cc = db.credit_card.find_one({"card_no": ident})
         if cc:
             cards = [cc]
-    else:
-        cust = find_customer(db, ident=ident or None)
-        if cust:
-            cards = list(db.credit_card.find({"customer_id": cust["_id"]}))
+        else:
+            cust = find_customer(db, ident=ident or None)
+            if cust:
+                cards = list(db.credit_card.find({"customer_id": cust["_id"]}))
     if not cards:
         return fail("E-1", "未找到信用卡")
     result = []
