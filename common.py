@@ -35,6 +35,16 @@ def m(x):
     return Decimal128(D(x))
 
 
+def as_int(v, default=0):
+    """安全转 int：非法(含 list/dict 的 TypeError)统一抛 ValueError，由全局处理器兜成 400（而非 500）。"""
+    if v in (None, ""):
+        return default
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        raise ValueError("整数格式非法")
+
+
 def dec(v):
     """从库读出的值转 Decimal（兼容 Decimal128 / int / float / None）。"""
     if isinstance(v, Decimal128):
@@ -142,6 +152,18 @@ def find_customer(db, *, customer_no=None, id_no=None, phone=None, customer_id=N
 def verify_owner(customer, doc):
     """核对某账户/卡/子户是否属于该客户（归属一致性）。"""
     return customer and doc and doc.get("customer_id") == customer["_id"]
+
+
+def check_identity(db, customer_id, id_no, session=None):
+    """身份核验：证件号必填且须与该客户一致。返回 (customer, error)。
+    用于取款/转账/外汇买卖/还款等资金或敏感操作，杜绝仅凭账号动他人资金。"""
+    id_no = norm_id(id_no)
+    if not id_no:
+        return None, ("E-ID", "请提供证件号以核验持卡人身份")
+    cust = db.customer.find_one({"_id": customer_id}, session=session)
+    if not cust or cust["id_no"] != id_no:
+        return None, ("E-ID", "身份核验失败：证件号与账户持有人不一致")
+    return cust, None
 
 
 # ============ UC-INC-2 账户校验 ============

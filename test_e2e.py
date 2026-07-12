@@ -105,29 +105,36 @@ def t_savings():
     al = open_acct(); set_acct(al["account_no"], card_status=C.CARD_LOST)
     ok("102 卡挂失→E-LOST [条件]", E(api("POST", "/api/savings/deposit", S, json={"account_no": al["account_no"], "amount": "100"})) == "E-LOST")
 
-    # UC-103 取款：金额/状态/日限额
+    # UC-103 取款：金额/状态/身份核验/日限额
     w = open_acct(bal="100000")
-    ok("103 金额0→E-AMT [边界]", E(api("POST", "/api/savings/withdraw", S, json={"account_no": w["account_no"], "amount": "0"})) == "E-AMT")
-    ok("103 余额不足→E-BAL [边界]", E(api("POST", "/api/savings/withdraw", S, json={"account_no": open_acct(bal="100")["account_no"], "amount": "500"})) == "E-BAL")
-    ok("103 取款成功 [正常流]", OK(api("POST", "/api/savings/withdraw", S, json={"account_no": w["account_no"], "amount": "200"})))
-    ok("103 日限额刚好50000成功 [边界]", OK(api("POST", "/api/savings/withdraw", S, json={"account_no": open_acct(bal="100000")["account_no"], "amount": "50000"})))
-    ok("103 超日限额50001→E-2 [边界]", E(api("POST", "/api/savings/withdraw", S, json={"account_no": open_acct(bal="100000")["account_no"], "amount": "50001"})) == "E-2")
-    wacc = open_acct(bal="100000"); api("POST", "/api/savings/withdraw", S, json={"account_no": wacc["account_no"], "amount": "50000"})
-    ok("103 叠加超限→E-2 [组合]", E(api("POST", "/api/savings/withdraw", S, json={"account_no": wacc["account_no"], "amount": "1"})) == "E-2")
+    ok("103 金额0→E-AMT [边界]", E(api("POST", "/api/savings/withdraw", S, json={"account_no": w["account_no"], "id_no": w["id_no"], "amount": "0"})) == "E-AMT")
+    lowb = open_acct(bal="100")
+    ok("103 余额不足→E-BAL [边界]", E(api("POST", "/api/savings/withdraw", S, json={"account_no": lowb["account_no"], "id_no": lowb["id_no"], "amount": "500"})) == "E-BAL")
+    ok("103 缺证件号→E-ID [判定]", E(api("POST", "/api/savings/withdraw", S, json={"account_no": w["account_no"], "amount": "10"})) == "E-ID")
+    ok("103 证件不匹配→E-ID [判定]", E(api("POST", "/api/savings/withdraw", S, json={"account_no": w["account_no"], "id_no": gen_id(), "amount": "10"})) == "E-ID")
+    ok("103 取款成功 [正常流]", OK(api("POST", "/api/savings/withdraw", S, json={"account_no": w["account_no"], "id_no": w["id_no"], "amount": "200"})))
+    lim1 = open_acct(bal="100000")
+    ok("103 日限额刚好50000成功 [边界]", OK(api("POST", "/api/savings/withdraw", S, json={"account_no": lim1["account_no"], "id_no": lim1["id_no"], "amount": "50000"})))
+    lim2 = open_acct(bal="100000")
+    ok("103 超日限额50001→E-2 [边界]", E(api("POST", "/api/savings/withdraw", S, json={"account_no": lim2["account_no"], "id_no": lim2["id_no"], "amount": "50001"})) == "E-2")
+    wacc = open_acct(bal="100000"); api("POST", "/api/savings/withdraw", S, json={"account_no": wacc["account_no"], "id_no": wacc["id_no"], "amount": "50000"})
+    ok("103 叠加超限→E-2 [组合]", E(api("POST", "/api/savings/withdraw", S, json={"account_no": wacc["account_no"], "id_no": wacc["id_no"], "amount": "1"})) == "E-2")
 
-    # UC-104 转账
-    src = open_acct(bal="10000"); dst = open_acct(bal="0")
-    ok("104 类型非法→E-OP [判定]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "XYZ", "from_account_no": src["account_no"], "to_account_no": dst["account_no"], "amount": "1"})) == "E-OP")
-    ok("104 金额0→E-AMT [边界]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "to_account_no": dst["account_no"], "amount": "0"})) == "E-AMT")
-    ok("104 INTRA同一账户→E-3 [组合]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "to_account_no": src["account_no"], "amount": "1"})) == "E-3")
-    ok("104 INTER未填收款行→E-1 [组合]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTER", "from_account_no": src["account_no"], "to_account_no": dst["account_no"], "amount": "1"})) == "E-1")
-    ok("104 转出余额不足→E-BAL [条件]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": open_acct(bal="1")["account_no"], "to_account_no": dst["account_no"], "amount": "100"})) == "E-BAL")
+    # UC-104 转账（须核验转出方身份）
+    src = open_acct(bal="10000"); dst = open_acct(bal="0"); sid = src["id_no"]
+    ok("104 类型非法→E-OP [判定]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "XYZ", "from_account_no": src["account_no"], "id_no": sid, "to_account_no": dst["account_no"], "amount": "1"})) == "E-OP")
+    ok("104 金额0→E-AMT [边界]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "id_no": sid, "to_account_no": dst["account_no"], "amount": "0"})) == "E-AMT")
+    ok("104 INTRA同一账户→E-3 [组合]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "id_no": sid, "to_account_no": src["account_no"], "amount": "1"})) == "E-3")
+    ok("104 转出方身份不符→E-ID [判定]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "id_no": gen_id(), "to_account_no": dst["account_no"], "amount": "1"})) == "E-ID")
+    ok("104 INTER未填收款行→E-1 [组合]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTER", "from_account_no": src["account_no"], "id_no": sid, "to_account_no": dst["account_no"], "amount": "1"})) == "E-1")
+    lowt = open_acct(bal="1")
+    ok("104 转出余额不足→E-BAL [条件]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": lowt["account_no"], "id_no": lowt["id_no"], "to_account_no": dst["account_no"], "amount": "100"})) == "E-BAL")
     dclosed = open_acct(); set_acct(dclosed["account_no"], status=C.ACCOUNT_CLOSED)
-    ok("104 转入账户销户→E-1 [判定]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "to_account_no": dclosed["account_no"], "amount": "1"})) == "E-1")
-    ok("104 行内他人转账成功 [正常流]", OK(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "to_account_no": dst["account_no"], "amount": "10"})))
-    ok("104 跨行转账成功 [正常流]", OK(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTER", "from_account_no": src["account_no"], "to_account_no": "620999", "to_bank": "工行", "amount": "10"})))
+    ok("104 转入账户销户→E-1 [判定]", E(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "id_no": sid, "to_account_no": dclosed["account_no"], "amount": "1"})) == "E-1")
+    ok("104 行内他人转账成功 [正常流]", OK(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "id_no": sid, "to_account_no": dst["account_no"], "amount": "10"})))
+    ok("104 跨行转账成功 [正常流]", OK(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTER", "from_account_no": src["account_no"], "id_no": sid, "to_account_no": "620999", "to_bank": "工行", "amount": "10"})))
     a2 = second_account(src["customer_no"])
-    ok("104 同户转账成功 [组合]", OK(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "to_account_no": a2, "amount": "5"})))
+    ok("104 同户转账成功 [组合]", OK(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "from_account_no": src["account_no"], "id_no": sid, "to_account_no": a2, "amount": "5"})))
 
     # UC-105 查询
     q = open_acct(bal="500")
@@ -214,8 +221,9 @@ def t_loan():
     ok("204 超额还款→E-3 [边界]", E(api("POST", "/api/loan/repay", L, json={"contract_no": ln, "amount": "999999"})) == "E-3")
     # base 账户放款后余额=50000，还款需从账户扣；先存够
     api("POST", "/api/savings/deposit", S, json={"account_no": base["account_no"], "amount": "60000"})
-    ok("204 部分还款成功 [正常流]", OK(api("POST", "/api/loan/repay", L, json={"contract_no": ln, "amount": "10000", "account_no": base["account_no"]})))
-    ok("204 全额结清成功 [边界]", OK(api("POST", "/api/loan/repay", L, json={"contract_no": ln, "amount": "40000", "account_no": base["account_no"]})))
+    ok("204 部分还款成功 [正常流]", OK(api("POST", "/api/loan/repay", L, json={"contract_no": ln, "amount": "10000", "account_no": base["account_no"], "id_no": base["id_no"]})))
+    ok("204 缺证件→E-ID [判定]", E(api("POST", "/api/loan/repay", L, json={"contract_no": ln, "amount": "100", "account_no": base["account_no"]})) == "E-ID")
+    ok("204 全额结清成功 [边界]", OK(api("POST", "/api/loan/repay", L, json={"contract_no": ln, "amount": "40000", "account_no": base["account_no"], "id_no": base["id_no"]})))
     ok("204 已结清再还→E-2 [判定]", E(api("POST", "/api/loan/repay", L, json={"contract_no": ln, "amount": "1", "account_no": base["account_no"]})) == "E-2")
 
     # UC-205 逾期查询 + 205b 催收
@@ -254,18 +262,20 @@ def t_forex():
     ok("302 缺省方向默认BUY成功 [边界]", OK(api("GET", "/api/forex/rate", FX, query={"currency": "USD"})))
     ok("302 正常查询成功 [正常流]", OK(api("GET", "/api/forex/rate", FX, query={"currency": "USD", "direction": "SELL"})))
 
-    # UC-303 买卖
-    ok("303 方向非法→E-DIR [判定]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "direction": "ZZ", "amount": "10"})) == "E-DIR")
-    ok("303 金额0→E-AMT [边界]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "direction": "BUY", "amount": "0"})) == "E-AMT")
-    ok("303 子户不存在→E-NOFX [判定]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": "FX999", "direction": "BUY", "amount": "10"})) == "E-NOFX")
-    ok("303 买入成功 [正常流]", OK(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "direction": "BUY", "amount": "100"})))
-    ok("303 卖出成功 [正常流]", OK(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "direction": "SELL", "amount": "50"})))
-    ok("303 外币余额不足→E-2 [条件]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "direction": "SELL", "amount": "999999"})) == "E-2")
+    # UC-303 买卖（须核验持卡人身份）
+    fid = cust["id_no"]
+    ok("303 方向非法→E-DIR [判定]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "id_no": fid, "direction": "ZZ", "amount": "10"})) == "E-DIR")
+    ok("303 金额0→E-AMT [边界]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "id_no": fid, "direction": "BUY", "amount": "0"})) == "E-AMT")
+    ok("303 子户不存在→E-NOFX [判定]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": "FX999", "id_no": fid, "direction": "BUY", "amount": "10"})) == "E-NOFX")
+    ok("303 身份不符→E-ID [判定]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "id_no": gen_id(), "direction": "BUY", "amount": "1"})) == "E-ID")
+    ok("303 买入成功 [正常流]", OK(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "id_no": fid, "direction": "BUY", "amount": "100"})))
+    ok("303 卖出成功 [正常流]", OK(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "id_no": fid, "direction": "SELL", "amount": "50"})))
+    ok("303 外币余额不足→E-2 [条件]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "id_no": fid, "direction": "SELL", "amount": "999999"})) == "E-2")
     set_acct(cust["account_no"], status=C.ACCOUNT_FROZEN)
-    ok("303 买入关联账户冻结→E-FROZEN [组合]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "direction": "BUY", "amount": "1"})) == "E-FROZEN")
+    ok("303 买入关联账户冻结→E-FROZEN [组合]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "id_no": fid, "direction": "BUY", "amount": "1"})) == "E-FROZEN")
     set_acct(cust["account_no"], status=C.ACCOUNT_NORMAL)
     db.fx_account.update_one({"fx_account_no": fxno}, {"$set": {"status": C.FX_FROZEN}})
-    ok("303 子户冻结→E-FXSTAT [判定]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "direction": "BUY", "amount": "1"})) == "E-FXSTAT")
+    ok("303 子户冻结→E-FXSTAT [判定]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "id_no": fid, "direction": "BUY", "amount": "1"})) == "E-FXSTAT")
     db.fx_account.update_one({"fx_account_no": fxno}, {"$set": {"status": C.FX_NORMAL}})
 
     # UC-304 变更
@@ -399,14 +409,29 @@ def t_auth():
     ok("000 新密码<6位→E-REQ [边界]", E(api("POST", "/api/change-password", tok, json={"old_password": "old123", "new_password": "n1"})) == "E-REQ")
     ok("000 新旧相同→E-2 [条件]", E(api("POST", "/api/change-password", tok, json={"old_password": "old123", "new_password": "old123"})) == "E-2")
     ok("000 修改成功 [正常流]", OK(api("POST", "/api/change-password", tok, json={"old_password": "old123", "new_password": "new456"})))
+    ok("000 改密后旧令牌失效 [判定]", E(api("GET", "/api/my-activity", tok, query={})) == "E-AUTH")
     ok("000 新密码可登录 [正常流]", cl.post("/api/login", json={"employee_no": emp, "password": "new456"}).get_json().get("success") is True)
     ok("000 旧密码登录失败 [判定]", cl.post("/api/login", json={"employee_no": emp, "password": "old123"}).get_json().get("success") is not True)
     ok("00A 我的经办记录 [正常流]", OK(api("GET", "/api/my-activity", S, query={})))
 
 
+def t_robust():
+    print("== 健壮性/安全 ==")
+    # 非对象 JSON 体不再 500（_body 归一为空对象，走正常校验）
+    r = cl.post("/api/savings/deposit", headers={"Authorization": "Bearer " + S}, json=[1, 2, 3])
+    ok("非对象JSON体不崩500 [健壮]", r.status_code != 500)
+    # int 吃数组归一为 400 而非 500
+    c = open_acct()
+    r2 = cl.post("/api/loan/apply", headers={"Authorization": "Bearer " + L},
+                 json={"customer_no": c["customer_no"], "loan_type": "个人消费贷", "amount": "1000", "term_months": [9]})
+    ok("term为数组→400非500 [健壮]", r2.status_code == 400)
+    # 伪造/无效令牌被拒
+    ok("无效令牌→401 [安全]", cl.get("/api/me", headers={"Authorization": "Bearer forged.token.xyz"}).status_code == 401)
+
+
 if __name__ == "__main__":
     try:
-        t_savings(); t_loan(); t_forex(); t_creditcard(); t_admin(); t_auth()
+        t_savings(); t_loan(); t_forex(); t_creditcard(); t_admin(); t_auth(); t_robust()
     finally:
         get_client().drop_database("bank_counter_e2etest")  # 删除一次性库
     print(f"\n==== 结果：{_p} 通过 / {_f} 失败（共 {_p + _f} 条断言）====")

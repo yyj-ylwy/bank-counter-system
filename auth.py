@@ -19,7 +19,8 @@ _serializer = URLSafeTimedSerializer(config.SECRET_KEY, salt="bank-auth")
 
 
 def issue_token(user):
-    return _serializer.dumps({"uid": str(user["_id"])})
+    # 令牌内含 token_version：改密/停用后自增使旧令牌失效（无状态吊销）
+    return _serializer.dumps({"uid": str(user["_id"]), "tv": user.get("token_version", 0)})
 
 
 def load_user_from_token(token):
@@ -27,8 +28,21 @@ def load_user_from_token(token):
         data = _serializer.loads(token, max_age=config.TOKEN_MAX_AGE)
     except (BadSignature, SignatureExpired):
         return None
+    if not isinstance(data, dict):
+        return None
     _id = oid(data.get("uid"))
-    return get_db().user_account.find_one({"_id": _id}) if _id else None
+    if not _id:
+        return None
+    u = get_db().user_account.find_one({"_id": _id})
+    if not u or u.get("token_version", 0) != data.get("tv", 0):  # 版本不符=已失效
+        return None
+    return u
+
+
+def _json():
+    """安全取 JSON 请求体：非对象(数组/字符串/数字)一律当空对象，避免 .get 崩 500。"""
+    b = request.get_json(force=True, silent=True)
+    return b if isinstance(b, dict) else {}
 
 
 def _current_token():
@@ -70,7 +84,7 @@ def require_role(*roles):
 
 @bp.post("/api/login")
 def login():
-    data = request.get_json(force=True, silent=True) or {}
+    data = _json()
     emp = (data.get("employee_no") or "").strip()
     pw = data.get("password") or ""
     u = get_db().user_account.find_one({"employee_no": emp})
@@ -93,7 +107,7 @@ def me():
 @bp.post("/api/change-password")
 @require_role()  # 任意登录用户可修改本人密码
 def change_password():
-    data = request.get_json(force=True, silent=True) or {}
+    data = _json()
     old = data.get("old_password") or ""
     new = data.get("new_password") or ""
     u = g.user
@@ -106,10 +120,14 @@ def change_password():
         return fail("E-REQ", "新密码至少 6 位", 400)
     if new == old:  # E-2 与原密码相同
         return fail("E-2", "新密码不能与原密码相同", 400)
-    db.user_account.update_one({"_id": u["_id"]}, {"$set": {"password_hash": generate_password_hash(new)}})
+    # 改密同时自增 token_version，使其它设备上的旧令牌立即失效；给当前会话签发新令牌
+    db.user_account.update_one({"_id": u["_id"]},
+                               {"$set": {"password_hash": generate_password_hash(new)},
+                                "$inc": {"token_version": 1}})
     write_audit(db, user_id=u["_id"], action="CHANGE_PASSWORD", object_type="user_account",
                 object_id=u["employee_no"], result=C.RESULT_SUCCESS)
-    return ok(message="密码修改成功，下次登录请使用新密码")
+    return ok({"token": issue_token(db.user_account.find_one({"_id": u["_id"]}))},
+              "密码修改成功，其它设备需用新密码重新登录")
 
 
 @bp.get("/api/my-activity")

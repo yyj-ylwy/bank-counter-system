@@ -47,6 +47,7 @@ def create_app():
 
     # 用户输入的金额/数字非法（如 "abc"）统一返回 400，而不是 500 崩溃
     from decimal import InvalidOperation
+    from werkzeug.exceptions import HTTPException
 
     @app.errorhandler(InvalidOperation)
     @app.errorhandler(ValueError)
@@ -54,13 +55,23 @@ def create_app():
         print(f"[input] 非法数字输入: {e}")
         return {"success": False, "error": "E-NUM", "message": "金额或数字格式非法"}, 400
 
+    # 兜底：任何未预料的异常都返回统一 500，不外泄堆栈/源码（防信息泄露）
+    @app.errorhandler(Exception)
+    def _internal(e):
+        if isinstance(e, HTTPException):
+            return e  # 404/405 等按原样返回
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": "E-SYS", "message": "系统繁忙，请稍后重试"}, 500
+
     @app.get("/")
     def index():
         return send_from_directory(app.static_folder, "index.html")
 
     @app.get("/api/health")
     def health():
-        return {"ok": db.ping()}
+        ok = db.ping()
+        return ({"ok": ok}, 200 if ok else 503)  # DB 不可达返回 503，便于健康探针识别
 
     # 启动初始化：建索引 + 种子数据（幂等，重复键异常忽略以防多进程竞态）
     with app.app_context():
@@ -76,4 +87,6 @@ def create_app():
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    import os
+    # 生产默认关闭 debug（避免交互式栈/源码泄露）；本地调试设 FLASK_DEBUG=1
+    app.run(host="0.0.0.0", port=5000, debug=os.environ.get("FLASK_DEBUG") == "1")

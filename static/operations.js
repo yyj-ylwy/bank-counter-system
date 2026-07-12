@@ -100,7 +100,7 @@ const OPERATIONS = {
     },
     {
       code: 'UC-103', name: '柜台取款', method: 'POST', path: '/api/savings/withdraw',
-      fields: [{ n: 'account_no', label: '账号', required: true }, { n: 'amount', label: '取款金额', type: 'number', required: true }],
+      fields: [{ n: 'account_no', label: '账号', required: true }, { n: 'id_no', label: '证件号', required: true, hint: '核验持卡人身份' }, { n: 'amount', label: '取款金额', type: 'number', required: true }],
       result: d => kv({ '当前余额': money(d.balance), '流水号': d.txn.txn_no }),
     },
     {
@@ -108,6 +108,7 @@ const OPERATIONS = {
       fields: [
         { n: 'transfer_type', label: '转账类型', type: 'select', options: [{ value: 'INTRA', label: '本行转账（含本人账户互转）' }, { value: 'INTER', label: '跨行转账' }] },
         { n: 'from_account_no', label: '转出账号', required: true },
+        { n: 'id_no', label: '转出方证件号', required: true, hint: '核验转出账户持有人身份' },
         { n: 'to_account_no', label: '收款账号', required: true },
         { n: 'to_bank', label: '收款方开户银行', hint: '仅跨行转账需填写' },
         { n: 'amount', label: '转账金额', type: 'number', required: true },
@@ -191,7 +192,7 @@ const OPERATIONS = {
     },
     {
       code: 'UC-204', name: '还款登记', method: 'POST', path: '/api/loan/repay',
-      fields: [{ n: 'contract_no', label: '合同号', required: true }, { n: 'amount', label: '还款金额', type: 'number', required: true }, { n: 'account_no', label: '还款账号', hint: '留空取合同账户' }],
+      fields: [{ n: 'contract_no', label: '合同号', required: true }, { n: 'amount', label: '还款金额', type: 'number', required: true }, { n: 'account_no', label: '还款账号', hint: '留空取合同账户' }, { n: 'id_no', label: '证件号', required: true, hint: '核验扣款账户持有人身份' }],
       result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余应还': money(d.loan.balance) }),
     },
     {
@@ -255,6 +256,7 @@ const OPERATIONS = {
       code: 'UC-303', name: '外汇买卖确认', method: 'POST', path: '/api/forex/trade',
       fields: [
         { n: 'fx_account_no', label: '外汇账号', required: true },
+        { n: 'id_no', label: '证件号', required: true, hint: '核验持卡人身份' },
         { n: 'direction', label: '方向', type: 'select', options: [{ value: 'BUY', label: '客户买入外币' }, { value: 'SELL', label: '客户卖出外币' }] },
         { n: 'amount', label: '外币金额', type: 'number', required: true },
       ],

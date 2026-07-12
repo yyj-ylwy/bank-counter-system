@@ -17,7 +17,7 @@ import constants as C
 from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
-    ok, fail, D, D6, dec, m, now,
+    ok, fail, D, D6, dec, m, now, norm_id, check_identity,
     find_customer, check_account, write_txn, write_audit,
     get_param, get_param_dec, customer_view, txn_view, parse_date_range, new_fx_account_no,
 )
@@ -27,7 +27,8 @@ clerk = require_role(C.ROLE_FOREX)
 
 
 def _body():
-    return request.get_json(force=True, silent=True) or {}
+    b = request.get_json(force=True, silent=True)
+    return b if isinstance(b, dict) else {}  # 非对象体当空，避免 .get 崩 500
 
 
 def fx_view(fx, cust=None, base=None):
@@ -244,6 +245,7 @@ def rate():
 def trade():
     d = _body()
     fx_no = (d.get("fx_account_no") or "").strip()
+    id_no = norm_id(d.get("id_no"))
     direction = (d.get("direction") or "").strip().upper()  # BUY=客户买入外币 / SELL=客户卖出外币
     foreign = D(d.get("amount") or 0)  # 外币金额
     if direction not in ("BUY", "SELL"):
@@ -255,6 +257,11 @@ def trade():
     fx = db.fx_account.find_one({"fx_account_no": fx_no})
     if not fx:
         return fail("E-NOFX", "未找到外汇子户")
+    cust, ierr = check_identity(db, fx["customer_id"], id_no)  # 外汇买卖须核验持卡人身份
+    if ierr:
+        write_audit(db, user_id=g.user["_id"], action="FX_TRADE", object_type="fx_account",
+                    object_id=fx_no, result=C.RESULT_FAILURE, detail={"reason": ierr[1]})
+        return fail(ierr[0], ierr[1])
     if fx["status"] != C.FX_NORMAL:
         return fail("E-FXSTAT", f"外汇子户状态为「{C.FX_STATUS_LABEL.get(fx['status'])}」，不可交易")
 

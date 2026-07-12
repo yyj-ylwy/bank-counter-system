@@ -10,7 +10,7 @@ from werkzeug.security import generate_password_hash
 import constants as C
 from db import get_db, run_in_transaction
 from auth import require_role
-from common import ok, fail, oid, now, dec, parse_date_range
+from common import ok, fail, oid, now, dec, parse_date_range, as_int
 
 bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 admin = require_role(C.ROLE_ADMIN)
@@ -25,7 +25,8 @@ BACKUP_VERSION = "1.0"
 
 
 def _body():
-    return request.get_json(force=True, silent=True) or {}
+    b = request.get_json(force=True, silent=True)
+    return b if isinstance(b, dict) else {}  # 非对象体当空，避免 .get 崩 500
 
 
 def user_view(u):
@@ -95,7 +96,7 @@ def update_user():
             return fail("E-2", "角色不存在")
         updates["role"] = d["role"]
     if "status" in d and d["status"] is not None:
-        updates["status"] = int(d["status"])  # 1启用 0停用
+        updates["status"] = as_int(d["status"])  # 1启用 0停用（非法→400 而非 500）
     if d.get("password"):
         updates["password_hash"] = generate_password_hash(d["password"])
     if not updates:
@@ -109,7 +110,11 @@ def update_user():
                      or ("status" in updates and updates["status"] != C.USER_ACTIVE)))
     if demoting and db.user_account.count_documents({"role": C.ROLE_ADMIN, "status": C.USER_ACTIVE}) <= 1:
         return fail("E-LASTADMIN", "系统必须保留至少一名在用管理员，操作被拒绝")
-    db.user_account.update_one({"_id": u["_id"]}, {"$set": updates})
+    # 改密码或停用时自增 token_version，令该用户已签发的旧令牌立即失效
+    op = {"$set": updates}
+    if "password_hash" in updates or updates.get("status") == 0:
+        op["$inc"] = {"token_version": 1}
+    db.user_account.update_one({"_id": u["_id"]}, op)
     _audit(db, "USER_UPDATE", "user_account", u["employee_no"],
            {k: v for k, v in updates.items() if k != "password_hash"})
     return ok({"user": user_view(db.user_account.find_one({"_id": u["_id"]}))}, "用户更新成功")

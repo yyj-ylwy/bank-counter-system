@@ -7,7 +7,7 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, dec, m, oid, now,
-    validate_id_no, validate_phone, norm_id, find_customer, check_account, write_txn, write_audit,
+    validate_id_no, validate_phone, norm_id, check_identity, find_customer, check_account, write_txn, write_audit,
     get_param_dec, customer_view, account_view, txn_view, parse_date_range,
     new_customer_no, new_account_no, new_debit_card_no,
 )
@@ -17,7 +17,8 @@ clerk = require_role(C.ROLE_SAVINGS)
 
 
 def _body():
-    return request.get_json(force=True, silent=True) or {}
+    b = request.get_json(force=True, silent=True)
+    return b if isinstance(b, dict) else {}  # 非对象体当空，避免 .get 崩 500
 
 
 # ---------- UC-101 客户信息登记与开户注册 ----------
@@ -124,6 +125,7 @@ def _today_withdrawn(db, account_id, session=None):
 def withdraw():
     d = _body()
     account_no = (d.get("account_no") or "").strip()
+    id_no = norm_id(d.get("id_no"))
     amount = D(d.get("amount") or 0)
     if amount <= 0:
         return fail("E-AMT", "取款金额必须大于零", 400)
@@ -135,6 +137,11 @@ def withdraw():
         acc, err = check_account(db, account_no, need_amount=amount, session=s)  # E-1余额/E-3状态
         if err:
             return None, err
+        cust, ierr = check_identity(db, acc["customer_id"], id_no, session=s)  # 取款须核验持卡人身份
+        if ierr:
+            write_audit(db, user_id=g.user["_id"], action=C.TXN_WITHDRAW, object_type="account",
+                        object_id=account_no, result=C.RESULT_FAILURE, detail={"reason": ierr[1]}, session=s)
+            return None, ierr
         if _today_withdrawn(db, acc["_id"], s) + amount > limit:  # E-2 当日限额
             return None, ("E-2", f"超过当日取款限额 {limit}")
         new_bal = dec(acc["balance"]) - amount
@@ -163,6 +170,7 @@ def transfer():
     from_no = (d.get("from_account_no") or "").strip()
     to_no = (d.get("to_account_no") or "").strip()
     to_bank = (d.get("to_bank") or "").strip()
+    id_no = norm_id(d.get("id_no"))
     amount = D(d.get("amount") or 0)
 
     if ttype not in ("INTRA", "INTER"):  # 转账类型必须合法，避免非法值被静默当跨行
@@ -180,6 +188,11 @@ def transfer():
         src, err = check_account(db, from_no, need_amount=amount + fee, session=s)  # E-2 余额
         if err:
             return None, err
+        cust, ierr = check_identity(db, src["customer_id"], id_no, session=s)  # 转账须核验转出方身份
+        if ierr:
+            write_audit(db, user_id=g.user["_id"], action="TRANSFER", object_type="account",
+                        object_id=from_no, result=C.RESULT_FAILURE, detail={"reason": ierr[1]}, session=s)
+            return None, ierr
 
         if ttype == "INTRA":
             dst, derr = check_account(db, to_no, session=s)  # E-1 转入账户异常
@@ -294,7 +307,7 @@ def card_op():
     if not acc:
         return fail("E-NOACC", "未找到账户")
     cust = db.customer.find_one({"_id": acc["customer_id"]})
-    if not cust or (id_no and cust["id_no"] != id_no):  # E-1 证件与账户不匹配
+    if not cust or not id_no or cust["id_no"] != id_no:  # E-1 证件与账户不匹配（挂失/补卡须核验）
         write_audit(db, user_id=g.user["_id"], action=f"CARD_{op or 'OP'}", object_type="account",
                     object_id=account_no, result=C.RESULT_FAILURE, detail={"reason": "证件不匹配"})
         return fail("E-1", "证件与账户归属不一致")
@@ -340,7 +353,7 @@ def close_account():
     if not acc:
         return fail("E-NOACC", "未找到账户")
     cust = db.customer.find_one({"_id": acc["customer_id"]})
-    if not cust or (id_no and cust["id_no"] != id_no):  # E-1 身份核验失败
+    if not cust or not id_no or cust["id_no"] != id_no:  # E-1 身份核验失败（销户须核验）
         write_audit(db, user_id=g.user["_id"], action=C.TXN_CLOSE_ACCOUNT, object_type="account",
                     object_id=account_no, result=C.RESULT_FAILURE, detail={"reason": "身份核验失败"})
         return fail("E-1", "身份核验失败，证件与账户不一致")
@@ -404,7 +417,7 @@ def update_customer():
                          id_no=id_no or None)
     if not cust:  # E-1
         return fail("E-1", "客户不存在，请重新输入查询条件")
-    if id_no and cust["id_no"] != id_no:  # E-2 身份核验失败
+    if not id_no or cust["id_no"] != id_no:  # E-2 身份核验失败（信息更新须核验）
         return fail("E-2", "身份核验失败")
 
     updates = {}

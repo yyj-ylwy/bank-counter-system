@@ -297,6 +297,9 @@ async function submitOp(op) {
 
 function handleResult(op, data) {
   if (data.success) {
+    if (data.data && data.data.token) {  // 改密后服务端签发新令牌，刷新本地令牌防当前会话失效
+      API.token = data.data.token; localStorage.setItem('token', API.token);
+    }
     banner('ok', data.message || '操作成功');
     if (op.result && data.data) {
       try { $('result').innerHTML = op.result(data.data); }

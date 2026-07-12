@@ -13,8 +13,8 @@ import constants as C
 from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
-    ok, fail, D, dec, m, now,
-    find_customer, check_account, write_txn, write_audit, verify_owner, norm_id,
+    ok, fail, D, dec, m, now, as_int,
+    find_customer, check_account, write_txn, write_audit, verify_owner, norm_id, check_identity,
     get_param_dec, customer_view, txn_view, new_credit_card_no,
 )
 
@@ -23,7 +23,8 @@ clerk = require_role(C.ROLE_CREDIT)
 
 
 def _body():
-    return request.get_json(force=True, silent=True) or {}
+    b = request.get_json(force=True, silent=True)
+    return b if isinstance(b, dict) else {}  # 非对象体当空，避免 .get 崩 500
 
 
 def cc_view(cc, cust=None):
@@ -129,8 +130,8 @@ def approve():
         cap = get_param_dec(db, C.P_CC_LIMIT_MAX, "50000")
         if limit <= 0 or limit > cap:  # E-1 超上限
             return fail("E-1", f"授信额度需在 0~{cap} 之间")
-        bill_day = int(d.get("bill_day") or 1)
-        repay_day = int(d.get("repay_day") or 20)
+        bill_day = as_int(d.get("bill_day"), 1)
+        repay_day = as_int(d.get("repay_day"), 20)
         if not (1 <= bill_day <= 28 and 1 <= repay_day <= 28):
             return fail("E-DAY", "账单日/还款日应在 1~28 之间", 400)
         db.credit_card.update_one({"_id": cc["_id"]}, {"$set": {

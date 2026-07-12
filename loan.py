@@ -7,7 +7,7 @@ import constants as C
 from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
-    ok, fail, D, dec, m, oid, now,
+    ok, fail, D, dec, m, oid, now, as_int, norm_id, check_identity,
     find_customer, check_account, write_txn, write_audit,
     get_param, get_param_dec, customer_view, txn_view, parse_date_range, new_contract_no,
 )
@@ -17,7 +17,8 @@ clerk = require_role(C.ROLE_LOAN)
 
 
 def _body():
-    return request.get_json(force=True, silent=True) or {}
+    b = request.get_json(force=True, silent=True)
+    return b if isinstance(b, dict) else {}  # 非对象体当空，避免 .get 崩 500
 
 
 def add_months(dt, months):
@@ -71,7 +72,7 @@ def apply():
 
     loan_type = (d.get("loan_type") or "").strip()
     amount = D(d.get("amount") or 0)
-    term = int(d.get("term_months") or 0)
+    term = as_int(d.get("term_months"))
     account_no = (d.get("account_no") or "").strip()
     if loan_type not in C.LOAN_TYPES:  # E-2 类型非法
         return fail("E-2", "贷款类型非法")
@@ -140,7 +141,7 @@ def approve():
         # 利率不能用 D()（只保留 2 位会把 0.0435 截成 0.04）；用 dec() 保留精度，存库时 D6_rate 再定 4 位
         rate = dec(d["interest_rate"]) if d.get("interest_rate") not in (None, "") \
             else get_param_dec(db, C.P_LOAN_RATE, "0.0435")
-        term = int(d["term_months"]) if d.get("term_months") not in (None, "") else int(ln["term_months"])
+        term = as_int(d["term_months"]) if d.get("term_months") not in (None, "") else int(ln["term_months"])
         if appr_amt <= 0 or appr_amt > C.LOAN_AMOUNT_MAX:
             return fail("E-VAL", f"批准金额须大于 0 且不超过 {C.LOAN_AMOUNT_MAX:,}", 400)
         if rate < 0 or rate > 1:  # 年利率为小数，上限 1（100%），防误填成 4.35 这类整数
@@ -228,6 +229,7 @@ def repay():
     contract_no = (d.get("contract_no") or "").strip()
     amount = D(d.get("amount") or 0)
     account_no = (d.get("account_no") or "").strip()
+    id_no = norm_id(d.get("id_no"))
     if amount <= 0:
         return fail("E-AMT", "还款金额必须大于零", 400)
 
@@ -244,24 +246,29 @@ def repay():
         if loan["status"] not in (C.LOAN_ACTIVE, C.LOAN_OVERDUE):  # E-2 已结清
             return None, ("E-2", f"贷款当前为「{C.LOAN_STATUS_LABEL.get(loan['status'])}」，无需还款")
         principal = dec(loan["balance"])
-        # 实时计算当前应收罚息（罚息不并入 balance，按“剩余本金 × 日罚息率 × 逾期天数”在还款时结算）
+        # 应收罚息 = 剩余本金×日罚息率×逾期天数 − 已缴罚息(paid_penalty)；扣除已缴避免同一逾期段被多次部分还款重复计提
         penalty = D(0)
         due = loan.get("due_date")
         if due and due < now() and principal > 0:
             if raw_overdue_rate is None:  # 逾期却缺罚息参数，明确报错而不是按 0 处理
                 return None, ("E-3", "缺少逾期罚息参数，请管理员先维护 LOAN_OVERDUE_RATE")
             overdue_days = (now() - due).days
-            penalty = D(principal * dec(raw_overdue_rate) * overdue_days)
+            accrued = D(principal * dec(raw_overdue_rate) * overdue_days)
+            penalty = D(max(accrued - dec(loan.get("paid_penalty", 0)), D(0)))
         total_due = principal + penalty
-        if amount > total_due:  # E-3 超额（本金 + 当前罚息）
+        if amount > total_due:  # E-3 超额（本金 + 当前应收罚息）
             return None, ("E-3", f"还款金额超过应还合计 {total_due}（本金 {principal} + 罚息 {penalty}）")
         acc, err = check_account(db, repay_no, need_amount=amount, session=s)  # E-1 余额不足
         if err:
             return None, err
-        # 罚息优先冲抵，剩余冲抵本金；只有本金还清且当前罚息付清才算结清
+        cust, ierr = check_identity(db, acc["customer_id"], id_no, session=s)  # 还款须核验扣款账户持有人身份
+        if ierr:
+            return None, ierr
+        # 罚息优先冲抵，剩余冲抵本金；只有本金还清且当期应收罚息付清才算结清
         pay_penalty = penalty if amount >= penalty else amount
         pay_principal = amount - pay_penalty
         new_loan_bal = principal - pay_principal
+        new_paid_penalty = dec(loan.get("paid_penalty", 0)) + pay_penalty  # 累计已缴罚息，持久化
         db.account.update_one({"_id": acc["_id"]},
                               {"$set": {"balance": m(dec(acc["balance"]) - amount)}}, session=s)
         settled = new_loan_bal <= 0 and (penalty - pay_penalty) <= 0
@@ -271,7 +278,8 @@ def repay():
                      "principal_part": m(pay_principal), "penalty_part": m(pay_penalty),
                      "account_no": repay_no, "balance_after": m(new_loan_bal)}
         db.loan.update_one({"_id": loan["_id"]},
-                           {"$set": {"balance": m(new_loan_bal), "status": new_status},
+                           {"$set": {"balance": m(new_loan_bal), "status": new_status,
+                                     "paid_penalty": m(new_paid_penalty)},
                             "$push": {"repay_log": log_entry}}, session=s)
         write_txn(db, business_type=C.TXN_LOAN_REPAY, amount=amount, user_id=g.user["_id"],
                   customer_id=loan["customer_id"], account_id=acc["_id"], related_id=loan["_id"], session=s)
