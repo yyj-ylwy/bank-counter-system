@@ -387,9 +387,22 @@ def t_admin():
     ok("504b 有内容未确认→E-CONFIRM [条件]", E(api("POST", "/api/admin/restore", AD, json={"payload": {"data": {}}, "confirm": False})) == "E-CONFIRM")
 
 
+def t_auth():
+    print("== 认证·修改密码 UC-000 ==")
+    emp = "PW" + str(uid())
+    api("POST", "/api/admin/users", AD, json={"employee_no": emp, "name": "改密测试", "password": "old123", "role": "SAVINGS_CLERK"})
+    tok = login(emp, "old123")
+    ok("000 原密码错误→E-1 [判定]", E(api("POST", "/api/change-password", tok, json={"old_password": "wrong", "new_password": "new123"})) == "E-1")
+    ok("000 新密码<6位→E-REQ [边界]", E(api("POST", "/api/change-password", tok, json={"old_password": "old123", "new_password": "n1"})) == "E-REQ")
+    ok("000 新旧相同→E-2 [条件]", E(api("POST", "/api/change-password", tok, json={"old_password": "old123", "new_password": "old123"})) == "E-2")
+    ok("000 修改成功 [正常流]", OK(api("POST", "/api/change-password", tok, json={"old_password": "old123", "new_password": "new456"})))
+    ok("000 新密码可登录 [正常流]", cl.post("/api/login", json={"employee_no": emp, "password": "new456"}).get_json().get("success") is True)
+    ok("000 旧密码登录失败 [判定]", cl.post("/api/login", json={"employee_no": emp, "password": "old123"}).get_json().get("success") is not True)
+
+
 if __name__ == "__main__":
     try:
-        t_savings(); t_loan(); t_forex(); t_creditcard(); t_admin()
+        t_savings(); t_loan(); t_forex(); t_creditcard(); t_admin(); t_auth()
     finally:
         get_client().drop_database("bank_counter_e2etest")  # 删除一次性库
     print(f"\n==== 结果：{_p} 通过 / {_f} 失败（共 {_p + _f} 条断言）====")

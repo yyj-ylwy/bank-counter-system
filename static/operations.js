@@ -31,7 +31,7 @@ const ACTION_LABEL = {
   CC_LOSS: '信用卡挂失', CC_FREEZE: '信用卡冻结', CC_UNFREEZE: '信用卡解冻', CC_REISSUE: '信用卡补卡',
   CC_EXCEPTION: '信用卡异常登记', CC_CARD: '信用卡卡片操作',
   USER_CREATE: '新建操作员', USER_UPDATE: '操作员信息变更', PARAM_UPDATE: '系统参数修改',
-  BACKUP: '数据备份', RESTORE: '数据恢复',
+  BACKUP: '数据备份', RESTORE: '数据恢复', CHANGE_PASSWORD: '修改密码',
 };
 const OBJECT_LABEL = {
   account: '储蓄账户', customer: '客户', loan: '贷款', fx_account: '外汇账户',
@@ -393,3 +393,17 @@ const OPERATIONS = {
     },
   ],
 };
+
+// 所有角色通用的操作（追加到每个角色菜单末尾）
+const COMMON = [
+  {
+    code: 'UC-000', name: '修改密码', method: 'POST', path: '/api/change-password',
+    fields: [
+      { n: 'old_password', label: '原密码', type: 'password', required: true },
+      { n: 'new_password', label: '新密码', type: 'password', required: true, hint: '至少 6 位，且不能与原密码相同' },
+      { n: 'confirm_new', label: '确认新密码', type: 'password', required: true },
+    ],
+    hint: '修改本人登录密码，成功后下次登录请使用新密码',
+    validate: v => v.new_password !== v.confirm_new ? '两次输入的新密码不一致' : null,
+  },
+];

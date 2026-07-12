@@ -7,7 +7,7 @@ from functools import wraps
 
 from flask import Blueprint, request, g
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
 import constants as C
@@ -88,3 +88,25 @@ def login():
 @require_role()
 def me():
     return ok({"user": public_user(g.user)})
+
+
+@bp.post("/api/change-password")
+@require_role()  # 任意登录用户可修改本人密码
+def change_password():
+    data = request.get_json(force=True, silent=True) or {}
+    old = data.get("old_password") or ""
+    new = data.get("new_password") or ""
+    u = g.user
+    db = get_db()
+    if not check_password_hash(u["password_hash"], old):  # E-1 原密码错误
+        write_audit(db, user_id=u["_id"], action="CHANGE_PASSWORD", object_type="user_account",
+                    object_id=u["employee_no"], result=C.RESULT_FAILURE, detail={"reason": "原密码错误"})
+        return fail("E-1", "原密码不正确")
+    if len(new) < 6:  # E-REQ 新密码太短
+        return fail("E-REQ", "新密码至少 6 位", 400)
+    if new == old:  # E-2 与原密码相同
+        return fail("E-2", "新密码不能与原密码相同", 400)
+    db.user_account.update_one({"_id": u["_id"]}, {"$set": {"password_hash": generate_password_hash(new)}})
+    write_audit(db, user_id=u["_id"], action="CHANGE_PASSWORD", object_type="user_account",
+                object_id=u["employee_no"], result=C.RESULT_SUCCESS)
+    return ok(message="密码修改成功，下次登录请使用新密码")

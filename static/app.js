@@ -62,6 +62,7 @@ function rmbUpper(num) {
 }
 // 每个用例的菜单图标（纯展示，按用例编号取；未命中用默认点）
 const ICONS = {
+  'UC-000': '🔑',
   'UC-101': '🆕', 'UC-102': '💰', 'UC-103': '💸', 'UC-104': '🔄', 'UC-105': '🔍', 'UC-106': '🪪', 'UC-107': '🗑️', 'UC-108': '✏️',
   'UC-201': '📋', 'UC-202': '✅', 'UC-203': '🏦', 'UC-204': '💵', 'UC-205': '⏰', 'UC-205b': '📞', 'UC-206': '📊',
   'UC-301': '🌐', 'UC-302': '💱', 'UC-303': '🔁', 'UC-304': '⚙️', 'UC-305': '🔍', 'UC-306': '📈', 'UC-307': '📌',
@@ -71,6 +72,7 @@ const ICONS = {
 const icon = code => ICONS[code] || '▪️';
 // 每个用例的提交按钮文案：说清"按下会发生什么"（查询类统一"查询"，写入类"确认XX/保存XX"）。
 const SUBMIT = {
+  'UC-000': '确认修改',
   'UC-101': '确认开户', 'UC-102': '确认存款', 'UC-103': '确认取款', 'UC-104': '确认转账',
   'UC-106': '确认办理', 'UC-107': '确认销户', 'UC-108': '保存变更',
   'UC-201': '提交申请', 'UC-202': '提交审批结论', 'UC-203': '确认放款', 'UC-204': '确认还款', 'UC-205b': '保存催收记录',
@@ -188,7 +190,7 @@ function showApp() {
   $('login').classList.add('hidden');
   $('app').classList.remove('hidden');
   $('who').textContent = `${currentUser.name}（${currentUser.role_label}）`;
-  const ops = OPERATIONS[currentUser.role] || [];
+  const ops = (OPERATIONS[currentUser.role] || []).concat(typeof COMMON !== 'undefined' ? COMMON : []);
   $('menu').innerHTML = ops.map((op, i) =>
     `<li data-i="${i}"><span class="ic">${icon(op.code)}</span><span class="mtext"><span class="code">${op.code}</span>${esc(op.name)}</span></li>`).join('');
   [...$('menu').children].forEach(li => li.onclick = () => selectOp(ops[+li.dataset.i], li));
@@ -268,6 +270,7 @@ async function submitOp(op) {
   $('result').innerHTML = '';
   let values;
   try { values = gather(op); } catch (err) { return banner('err', err.message); }
+  if (op.validate) { const msg = op.validate(values); if (msg) return banner('err', msg); }  // 跨字段校验（如两次密码一致）
 
   // 资金/不可逆操作：提交前复核确认
   if (CONFIRM_OPS.has(op.code)) {
