@@ -428,6 +428,8 @@ def update_customer():
     cust = find_customer(db, ident=ident or None)
     if not cust:  # E-1
         return fail("E-1", "客户不存在，请重新输入查询条件")
+    if not match_identity(cust, ident):  # E-2 身份核验：ident须确为该客户的证件号/邮箱/手机号
+        return fail("E-2", "身份核验失败，请使用证件号、邮箱或手机号定位客户")
 
     updates = {}
     old = {}

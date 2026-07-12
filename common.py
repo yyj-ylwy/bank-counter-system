@@ -191,7 +191,9 @@ def match_identity(cust, ident):
     s = str(ident).strip()
     if not s:
         return False
-    return norm_id(s) == cust.get("id_no") or (bool(cust.get("email")) and s.lower() == cust["email"])
+    return (norm_id(s) == cust.get("id_no")
+            or (bool(cust.get("email")) and s.lower() == cust["email"])
+            or (bool(cust.get("phone")) and s == cust.get("phone")))
 
 
 def check_identity(db, customer_id, ident, session=None):
