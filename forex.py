@@ -45,13 +45,18 @@ def fx_view(fx, cust=None, base=None):
     }
 
 
-# ========== 实时行情（Alpha Vantage）：按需拉取，全部币种一次拉齐，缓存 30 分钟 ==========
-# 设计：不再在 system_param 保存“牌价兜底”，牌价一律来自实时行情。任一功能(汇率查询/买卖/挂牌)需要牌价时，
-#       若距上次拉取不足 30 分钟则直接用内存缓存、不调 API（省额度：Alpha Vantage 免费仅约 25 次/天）；
-#       否则一次性拉取全部支持币种并缓存。因此 UC-302 查单币种也命中同一缓存，无需单独调用 API。
+# ========== 实时行情：按需拉取，一次取全部币种，缓存 30 分钟 ==========
+# 设计：不再在 system_param 保存“牌价兜底”，牌价一律来自实时行情。
+# 主源 open.er-api.com：一次 HTTP 请求即返回全部币种对 CNY 的汇率（免密钥、无逐币种限流），要么全有要么全无，
+#   避免了 Alpha Vantage “一次要打 9 个请求、免费仅 25 次/天、突发只成功前几个”导致的“只剩美元”问题。
+# 兜底 Alpha Vantage：仅当主源故障/缺某币种时，用其 Key 逐个补齐（通常不触发）。
+# 缓存：任一功能(汇率查询/买卖/挂牌)需要牌价时，若已集齐全部币种且距上次拉取 < 30 分钟则直接用内存缓存、不调 API；
+#   若上次未集齐(主源临时故障)，60 秒即可重试，直至集齐后再进入 30 分钟缓存。UC-302 查单币种也命中同一缓存。
+_ER_API = "https://open.er-api.com/v6/latest/CNY"
 _rates = {}              # currency -> {"mid":Decimal, "buy":Decimal, "sell":Decimal, "as_of":str}
-_rates_attempt_at = 0.0  # 上次“尝试拉取”的 monotonic 时刻（无论成败，用于 30 分钟节流）
-_RATE_TTL = 1800         # 缓存/节流窗口：30 分钟
+_rates_attempt_at = 0.0  # 上次“尝试拉取”的 monotonic 时刻
+_RATE_TTL = 1800         # 集齐后缓存/节流窗口：30 分钟
+_RETRY_GAP = 60          # 未集齐时的重试最小间隔：60 秒
 
 
 def parse_av(text):
@@ -86,6 +91,28 @@ def _fetch_mid_raw(currency):
     return parse_av(text)
 
 
+def _fetch_all_mids_erapi():
+    """主源：一次请求取全部支持币种对 CNY 的中间价。返回 ({currency: Decimal}, as_of, error 或 None)。"""
+    try:
+        with urllib.request.urlopen(_ER_API, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:  # noqa: BLE001  网络/超时/解析
+        return {}, "", f"行情服务连接失败：{e}"
+    if data.get("result") != "success":
+        return {}, "", "行情服务返回异常"
+    as_of = str(data.get("time_last_update_utc", ""))[:25]
+    rates = data.get("rates") or {}
+    out = {}
+    for c in C.SUPPORTED_CURRENCIES:
+        v = rates.get(c)  # rates[c] = 每 1 CNY 兑 c；取倒数得 1 单位 c 兑 CNY（即牌价中间价）
+        if v:
+            try:
+                out[c] = Decimal(1) / Decimal(str(v))
+            except (InvalidOperation, ZeroDivisionError):
+                pass
+    return out, as_of, None
+
+
 def quote_from_mid(mid, spread):
     """由中间价与点差算挂牌买卖价：卖出价=中间价×(1+点差)，买入价=中间价×(1-点差)。"""
     sell = D6(mid * (Decimal(1) + spread))   # 银行卖出（客户买入）价，偏高
@@ -94,22 +121,29 @@ def quote_from_mid(mid, spread):
 
 
 def refresh_rates(db):
-    """确保牌价新鲜：距上次拉取 < 30 分钟则直接用内存缓存、不调 API；否则一次性拉取全部支持币种并缓存。
-    返回 (rates_dict, failed[(currency, reason)], from_cache_bool)。"""
+    """确保牌价新鲜：优先用内存缓存，缓存过期才拉取。主源 er-api 一次取全部币种；缺的再用 AV 兜底。
+    集齐全部币种后缓存 30 分钟；未集齐时 60 秒即可重试。返回 (rates_dict, failed[(cur,reason)], from_cache_bool)。"""
     global _rates_attempt_at
     now_m = time.monotonic()
-    if _rates_attempt_at and (now_m - _rates_attempt_at) < _RATE_TTL:
+    complete = bool(_rates) and all(c in _rates for c in C.SUPPORTED_CURRENCIES)
+    gap = _RATE_TTL if complete else _RETRY_GAP  # 已集齐→30分钟；未集齐→60秒即重试
+    if _rates_attempt_at and (now_m - _rates_attempt_at) < gap:
         return _rates, [], True
-    _rates_attempt_at = now_m  # 无论成败都记一次，确保 30 分钟内不再打 API（保护免费额度）
+    _rates_attempt_at = now_m
     spread = get_param_dec(db, C.P_FX_SPREAD, "0.003")
+    mids, as_of, err = _fetch_all_mids_erapi()  # 主源：一次拉全部
     failed = []
     for c in C.SUPPORTED_CURRENCIES:
-        mid, info = _fetch_mid_raw(c)
-        if mid is None:
-            failed.append((c, info))
-            continue
+        mid = mids.get(c)
+        src = as_of
+        if mid is None:  # 主源缺该币种 → Alpha Vantage 逐个兜底
+            mid, info = _fetch_mid_raw(c)
+            src = info
+            if mid is None:
+                failed.append((c, err or info))
+                continue
         buy, sell = quote_from_mid(mid, spread)
-        _rates[c] = {"mid": D6(mid), "buy": buy, "sell": sell, "as_of": info}
+        _rates[c] = {"mid": D6(mid), "buy": buy, "sell": sell, "as_of": src}
     return _rates, failed, False
 
 
