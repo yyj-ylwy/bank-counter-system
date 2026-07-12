@@ -14,7 +14,7 @@ const API = {
     const opts = { method, headers: { ...this.headers() } };
     if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
     const res = await fetch(url, opts);
-    let data; try { data = await res.json(); } catch { data = { success: false, message: '响应解析失败' }; }
+    let data; try { data = await res.json(); } catch { data = { success: false, message: '服务器返回异常，请稍后重试' }; }
     return { status: res.status, data };
   }
 };
@@ -34,11 +34,25 @@ const ICONS = {
   'UC-501': '👥', 'UC-501b': '➕', 'UC-501c': '✏️', 'UC-502': '⚙️', 'UC-502b': '🛠️', 'UC-503': '📜', 'UC-504': '💾', 'UC-504b': '♻️',
 };
 const icon = code => ICONS[code] || '▪️';
+// 每个用例的提交按钮文案：说清"按下会发生什么"（查询类统一"查询"，写入类"确认XX/保存XX"）。
+const SUBMIT = {
+  'UC-101': '确认开户', 'UC-102': '确认存款', 'UC-103': '确认取款', 'UC-104': '确认转账',
+  'UC-106': '确认办理', 'UC-107': '确认销户', 'UC-108': '保存变更',
+  'UC-201': '提交申请', 'UC-202': '提交审批结论', 'UC-203': '确认放款', 'UC-204': '确认还款', 'UC-205b': '保存催收记录',
+  'UC-301': '确认开立', 'UC-303': '确认买卖', 'UC-304': '确认变更',
+  'UC-401': '提交申请', 'UC-402': '提交审批结论', 'UC-403': '生成账单', 'UC-404': '确认还款', 'UC-405': '确认取现', 'UC-406': '确认办理',
+  'UC-501b': '确认新建用户', 'UC-501c': '保存修改', 'UC-502b': '保存参数', 'UC-504b': '确认恢复数据',
+};
+function submitLabel(op) {
+  if (op.type === 'download') return '下载备份';
+  if (SUBMIT[op.code]) return SUBMIT[op.code];
+  return op.method === 'GET' ? '查询' : '提交';  // GET 查询类统一"查询"，其余兜底"提交"
+}
 function kv(obj) {
   return '<table class="kv">' + Object.entries(obj).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('') + '</table>';
 }
 function tbl(rows, cols) {
-  if (!rows || !rows.length) return '<p class="hint">无数据</p>';
+  if (!rows || !rows.length) return '<p class="hint">暂无记录</p>';
   const head = '<tr>' + cols.map(c => `<th${c.fmt === money ? ' class="num"' : ''}>${esc(c.label)}</th>`).join('') + '</tr>';
   const body = rows.map(r => '<tr>' + cols.map(c => {
     const val = c.fmt ? c.fmt(r[c.k], r) : r[c.k];
@@ -99,7 +113,7 @@ function selectOp(op, li) {
       <h2><span class="ic-lg">${icon(op.code)}</span><span class="code">${op.code}</span>${esc(op.name)}</h2>
       ${op.hint ? `<p class="hint">${esc(op.hint)}</p>` : ''}
       <form id="opform">${fieldsHtml}${uploadHtml}
-        <button type="submit" class="btn">${op.type === 'download' ? '生成并下载' : '提交'}</button>
+        <button type="submit" class="btn">${esc(submitLabel(op))}</button>
       </form>
       <div id="banner"></div>
       <div id="result"></div>
@@ -156,16 +170,16 @@ async function submitOp(op) {
 
   const btn = $('opform').querySelector('button[type=submit]');
   const label = btn.textContent;
-  btn.disabled = true; btn.classList.add('loading'); btn.textContent = '处理中';
+  btn.disabled = true; btn.classList.add('loading'); btn.textContent = '处理中…';
   try {
     if (op.type === 'download') return await doDownload(op);
     if (op.type === 'upload') return await doUpload(op, values);
     const req = op.method === 'GET' ? { query: values } : { body: values };
     const { status, data } = await API.call(op.method, op.path, req);
-    if (status === 401) { alert('登录已过期，请重新登录'); return logout(); }
+    if (status === 401) return sessionExpired();
     handleResult(op, data);
   } catch (err) {
-    banner('err', '请求失败：' + (err.message || '网络错误'));
+    banner('err', '网络异常，请检查连接后重试', err.message);
   } finally {
     btn.disabled = false; btn.classList.remove('loading'); btn.textContent = label;
   }
@@ -181,7 +195,8 @@ function handleResult(op, data) {
       $('result').innerHTML = defaultResult(data.data);
     }
   } else {
-    banner('err', `[${data.error || 'E'}] ${data.message || '操作失败'}`);
+    // 只给用户看中文说明；内部错误码(E-1等)降级为悬浮提示，供技术排查
+    banner('err', data.message || '操作失败', data.error);
   }
 }
 
@@ -191,16 +206,23 @@ function defaultResult(d) {
   return Object.keys(scalar).length ? kv(scalar) : '';
 }
 
-function banner(kind, msg) {
+function banner(kind, msg, code) {
   const b = $('banner');
   if (!msg) { b.innerHTML = ''; return; }
-  b.innerHTML = `<div class="alert ${kind === 'ok' ? 'ok' : 'err'}">${esc(msg)}</div>`;
+  const title = code ? ` title="${esc(code)}"` : '';  // 错误码悬浮显示，不占正文
+  b.innerHTML = `<div class="alert ${kind === 'ok' ? 'ok' : 'err'}"${title}>${esc(msg)}</div>`;
+}
+
+// 会话过期统一处理：退回登录页并在登录框提示
+function sessionExpired() {
+  logout();
+  $('loginErr').textContent = '登录已过期，请重新登录';
 }
 
 // ---------- 备份下载 ----------
 async function doDownload(op) {
   const res = await fetch(op.path, { headers: API.headers() });
-  if (res.status === 401) { alert('登录已过期'); return logout(); }
+  if (res.status === 401) return sessionExpired();
   if (!res.ok) return banner('err', '备份失败');
   const blob = await res.blob();
   const cd = res.headers.get('Content-Disposition') || '';
@@ -220,8 +242,8 @@ async function doUpload(op, values) {
   fd.append('file', fileEl.files[0]);
   for (const [k, v] of Object.entries(values)) fd.append(k, v);
   const res = await fetch(op.path, { method: 'POST', headers: API.headers(), body: fd });
-  if (res.status === 401) { alert('登录已过期'); return logout(); }
-  const data = await res.json().catch(() => ({ success: false, message: '响应解析失败' }));
+  if (res.status === 401) return sessionExpired();
+  const data = await res.json().catch(() => ({ success: false, message: '服务器返回异常，请稍后重试' }));
   handleResult(op, data);
 }
 
