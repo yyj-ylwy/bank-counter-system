@@ -106,6 +106,7 @@ def ensure_indexes():
     db.user_account.create_index([("employee_no", ASCENDING)], unique=True)
     db.customer.create_index([("customer_no", ASCENDING)], unique=True)
     db.customer.create_index([("id_no", ASCENDING)], unique=True)  # 证件号全局唯一
+    db.customer.create_index([("email", ASCENDING)], unique=True, sparse=True)  # 邮箱唯一（仅对已登记邮箱的客户生效）
     db.customer.create_index([("phone", ASCENDING)])
     db.account.create_index([("account_no", ASCENDING)], unique=True)
     db.account.create_index([("card_no", ASCENDING)], unique=True)

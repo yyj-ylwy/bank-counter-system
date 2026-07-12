@@ -54,12 +54,14 @@ def uid():
     return _seq[0]
 def gen_id(n=None):  # 18 位测试身份证（前缀避开演示号 110101199001011234）
     return "11010119900202" + f"{n if n is not None else uid():04d}"
+def gen_email(n=None):  # 唯一测试邮箱（开户必填）
+    return f"user{n if n is not None else uid()}@test.example.com"
 
 def open_acct(bal="0", phone="", id_no=None, name=None):
     n = uid(); idn = id_no or gen_id(n)
     r = api("POST", "/api/savings/open-account", S,
             json={"name": name or f"客户{n}", "id_type": "身份证", "id_no": idn,
-                  "phone": phone, "initial_balance": bal})
+                  "email": gen_email(n), "phone": phone, "initial_balance": bal})
     assert r.get("success"), r
     a = r["data"]["account"]; c = r["data"]["customer"]
     return {"customer_no": c["customer_no"], "account_no": a["account_no"], "card_no": a["card_no"], "id_no": idn}
@@ -85,13 +87,14 @@ def t_savings():
     ok("101 身份证19位→E-2 [边界]", E(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": "110101199002020001X"})) == "E-2")
     ok("101 证件类型非法→E-2 [条件]", E(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "驾照", "id_no": gen_id()})) == "E-2")
     xid = gen_id()[:-1] + "x"  # 末位小写 x
-    ok("101 尾号x归一化开户成功 [边界]", OK(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": xid})))
+    ok("101 尾号x归一化开户成功 [边界]", OK(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": xid, "email": gen_email()})))
     ok("101 归一化后大写X可查到 [组合]", OK(api("GET", "/api/savings/query", S, query={"id_no": xid.upper()})))
-    ok("101 手机号10位→E-PHONE [边界]", E(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": gen_id(), "phone": "1381234567"})) == "E-PHONE")
+    ok("101 手机号10位→E-PHONE [边界]", E(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": gen_id(), "email": gen_email(), "phone": "1381234567"})) == "E-PHONE")
+    ok("101 邮箱缺失→E-EMAIL [判定]", E(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": gen_id()})) == "E-EMAIL")
     dup = open_acct()
-    ok("101 证件号已存在→E-1 [判定]", E(api("POST", "/api/savings/open-account", S, json={"name": "乙", "id_type": "身份证", "id_no": dup["id_no"]})) == "E-1")
-    ok("101 init<0→E-AMT [边界]", E(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": gen_id(), "initial_balance": "-1"})) == "E-AMT")
-    ok("101 正常开户成功 [正常流]", OK(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": gen_id(), "phone": "13812345678", "initial_balance": "1000"})))
+    ok("101 证件号已存在→E-1 [判定]", E(api("POST", "/api/savings/open-account", S, json={"name": "乙", "id_type": "身份证", "id_no": dup["id_no"], "email": gen_email()})) == "E-1")
+    ok("101 init<0→E-AMT [边界]", E(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": gen_id(), "email": gen_email(), "initial_balance": "-1"})) == "E-AMT")
+    ok("101 正常开户成功 [正常流]", OK(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": gen_id(), "email": gen_email(), "phone": "13812345678", "initial_balance": "1000"})))
 
     # UC-102 存款：check_account 各状态分支
     a = open_acct(bal="1000")
@@ -166,7 +169,7 @@ def t_savings():
     ok("107 余额未清零→E-5 [边界]", E(api("POST", "/api/savings/close-account", S, json={"account_no": clb["account_no"], "id_no": clb["id_no"]})) == "E-5")
     clok = open_acct()
     ok("107 正常销户成功 [正常流]", OK(api("POST", "/api/savings/close-account", S, json={"account_no": clok["account_no"], "id_no": clok["id_no"]})))
-    ok("101 销户后可重新开户 [生命周期]", OK(api("POST", "/api/savings/open-account", S, json={"name": "重开客户", "id_type": "身份证", "id_no": clok["id_no"]})))
+    ok("101 销户后可重新开户 [生命周期]", OK(api("POST", "/api/savings/open-account", S, json={"name": "重开客户", "id_type": "身份证", "id_no": clok["id_no"], "email": gen_email()})))
 
     # UC-108 客户信息更新
     u = open_acct()

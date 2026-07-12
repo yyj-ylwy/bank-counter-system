@@ -14,7 +14,7 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, dec, m, now, as_int,
-    find_customer, check_account, write_txn, write_audit, verify_owner, norm_id, check_identity,
+    find_customer, check_account, write_txn, write_audit, verify_owner, norm_id, check_identity, match_identity,
     get_param_dec, customer_view, txn_view, new_credit_card_no,
 )
 
@@ -74,8 +74,7 @@ def _oldest_unpaid_bill(db, cc_id, session=None):
 def apply():
     d = _body()
     db = get_db()
-    cust = find_customer(db, customer_no=(d.get("customer_no") or "").strip() or None,
-                         id_no=(d.get("id_no") or "").strip() or None)
+    cust = find_customer(db, ident=(d.get("ident") or d.get("id_no") or d.get("customer_no") or "").strip() or None)
     if not cust:
         return fail("E-NOCUST", "未找到客户")
     if cust["status"] == C.CUSTOMER_BLACKLIST:  # E-1 严重不良记录
@@ -232,7 +231,7 @@ def repay():
     d = _body()
     card_no = (d.get("card_no") or "").strip()
     account_no = (d.get("account_no") or "").strip()
-    id_no = norm_id(d.get("id_no"))
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
     repay_type = (d.get("repay_type") or "PARTIAL").strip().upper()  # FULL/MIN/PARTIAL
     if repay_type not in ("FULL", "MIN", "PARTIAL"):  # 拼错不再静默当部分还款
         return fail("E-OP", "还款方式非法（全额/最低/部分）", 400)
@@ -273,7 +272,7 @@ def repay():
         acc, err = check_account(db, account_no, need_amount=pay, session=s)  # E-1 余额不足
         if err:
             return None, err
-        _cust, ierr = check_identity(db, cc2["customer_id"], id_no, session=s)  # 还款须核验持卡人身份
+        _cust, ierr = check_identity(db, cc2["customer_id"], ident, session=s)  # 还款须核验持卡人身份（证件号或邮箱）
         if ierr:
             return None, ierr
         if acc["customer_id"] != cc2["customer_id"]:  # 还款储蓄账户须属持卡人本人，杜绝用他人余额清卡
@@ -323,7 +322,7 @@ def _today_cash(db, cc_id, session=None):
 def cash_advance():
     d = _body()
     card_no = (d.get("card_no") or "").strip()
-    id_no = norm_id(d.get("id_no"))
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
     amount = D(d.get("amount") or 0)
     payout_account = (d.get("payout_account") or "").strip()  # 空=现金，否则转入该储蓄账户
     if amount <= 0:
@@ -334,12 +333,12 @@ def cash_advance():
     if not cc:
         return fail("E-NOCARD", "未找到信用卡")
     cust = db.customer.find_one({"_id": cc["customer_id"]})
-    if not id_no:  # UC-405 前置条件：客户身份已核验
-        return fail("E-REQ", "请提供证件号以核验客户身份", 400)
-    if not cust or cust["id_no"] != id_no:  # E-3 身份核验失败
+    if not ident:  # UC-405 前置条件：客户身份已核验
+        return fail("E-REQ", "请提供证件号或邮箱以核验客户身份", 400)
+    if not match_identity(cust, ident):  # E-3 身份核验失败
         write_audit(db, user_id=g.user["_id"], action=C.TXN_CC_CASH, object_type="credit_card",
                     object_id=card_no, result=C.RESULT_FAILURE, detail={"reason": "身份核验失败"})
-        return fail("E-3", "身份核验失败，证件与信用卡不一致")
+        return fail("E-3", "身份核验失败，证件/邮箱与信用卡不一致")
     if cc["status"] != C.CC_ACTIVE:  # E-1 挂失/冻结/异常
         return fail("E-1", f"信用卡状态为「{C.CC_STATUS_LABEL.get(cc['status'])}」，不可取现")
 
@@ -397,16 +396,16 @@ def cash_advance():
 def card_op():
     d = _body()
     card_no = (d.get("card_no") or "").strip()
-    id_no = norm_id(d.get("id_no"))
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
     op = (d.get("op") or "").strip().upper()  # LOSS/REISSUE/FREEZE/UNFREEZE/EXCEPTION
     db = get_db()
     cc = db.credit_card.find_one({"card_no": card_no})
     if not cc:  # E-1
         return fail("E-1", "信用卡不存在，请重新核对卡号")
     cust = db.customer.find_one({"_id": cc["customer_id"]})
-    if not id_no:
-        return fail("E-REQ", "请提供证件号以核验客户身份", 400)
-    if not cust or cust["id_no"] != id_no:  # E-3 身份核验失败
+    if not ident:
+        return fail("E-REQ", "请提供证件号或邮箱以核验客户身份", 400)
+    if not match_identity(cust, ident):  # E-3 身份核验失败
         write_audit(db, user_id=g.user["_id"], action=f"CC_{op or 'CARD'}", object_type="credit_card",
                     object_id=card_no, result=C.RESULT_FAILURE, detail={"reason": "身份核验失败"})
         return fail("E-3", "身份核验失败")
@@ -470,15 +469,15 @@ def card_op():
 def query():
     db = get_db()
     card_no = (request.args.get("card_no") or "").strip()
-    customer_no = (request.args.get("customer_no") or "").strip()
-    id_no = (request.args.get("id_no") or "").strip()
+    ident = (request.args.get("ident") or request.args.get("id_no")
+             or request.args.get("customer_no") or "").strip()  # 邮箱/证件号/客户号 任一
     cards = []
     if card_no:
         cc = db.credit_card.find_one({"card_no": card_no})
         if cc:
             cards = [cc]
     else:
-        cust = find_customer(db, customer_no=customer_no or None, id_no=id_no or None)
+        cust = find_customer(db, ident=ident or None)
         if cust:
             cards = list(db.credit_card.find({"customer_id": cust["_id"]}))
     if not cards:

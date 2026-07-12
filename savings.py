@@ -7,7 +7,8 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, dec, m, oid, now,
-    validate_id_no, validate_phone, norm_id, check_identity, find_customer, check_account, write_txn, write_audit,
+    validate_id_no, validate_phone, validate_email, norm_id, check_identity, match_identity,
+    find_customer, check_account, write_txn, write_audit,
     get_param_dec, customer_view, account_view, txn_view, parse_date_range,
     new_customer_no, new_account_no, new_debit_card_no,
 )
@@ -29,6 +30,7 @@ def open_account():
     name = (d.get("name") or "").strip()
     id_type = (d.get("id_type") or "身份证").strip()
     id_no = norm_id(d.get("id_no"))
+    email = (d.get("email") or "").strip()
     phone = (d.get("phone") or "").strip()
     init = D(d.get("initial_balance") or 0)
 
@@ -37,6 +39,9 @@ def open_account():
     valid, reason, id_no = validate_id_no(id_type, id_no)  # id_no 归一化（尾号 X 大写、去空格）
     if not valid:  # E-2 证件号格式非法/过期
         return fail("E-2", reason)
+    eok, ereason, email = validate_email(email)  # 邮箱必填：作为交易时可替代证件号核验身份的标识
+    if not eok:
+        return fail("E-EMAIL", ereason, 400)
     pok, preason, phone = validate_phone(phone)  # 手机号校验（选填，非空须合法）
     if not pok:
         return fail("E-PHONE", preason, 400)
@@ -48,15 +53,22 @@ def open_account():
     # 已有在用账户才算重复；若客户曾销户(无正常账户)，允许复用客户重新开户，不永久锁死
     if existing and db.account.find_one({"customer_id": existing["_id"], "status": C.ACCOUNT_NORMAL}):
         return fail("E-1", "该证件号已关联在用账户，可转为信息更新")
+    email_owner = db.customer.find_one({"email": email})  # 邮箱全局唯一（排除同一客户）
+    if email_owner and email_owner.get("id_no") != id_no:
+        return fail("E-EMAIL", "该邮箱已被其他客户使用", 400)
 
     def txn(s):
         if existing:  # 复用既有客户，仅新开账户
             cust = existing
             cid = existing["_id"]
+            if not existing.get("email"):  # 老客户补登邮箱
+                db.customer.update_one({"_id": cid}, {"$set": {"email": email}}, session=s)
+                cust["email"] = email
         else:
             cust = {
                 "customer_no": new_customer_no(s), "name": name, "id_type": id_type,
-                "id_no": id_no, "phone": phone, "status": C.CUSTOMER_NORMAL, "created_at": now(),
+                "id_no": id_no, "email": email, "phone": phone,
+                "status": C.CUSTOMER_NORMAL, "created_at": now(),
             }
             cid = db.customer.insert_one(cust, session=s).inserted_id
             cust["_id"] = cid
@@ -131,7 +143,7 @@ def _today_withdrawn(db, account_id, session=None):
 def withdraw():
     d = _body()
     account_no = (d.get("account_no") or "").strip()
-    id_no = norm_id(d.get("id_no"))
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
     amount = D(d.get("amount") or 0)
     if amount <= 0 or amount > C.TXN_AMOUNT_MAX:
         return fail("E-AMT", f"取款金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}", 400)
@@ -143,7 +155,7 @@ def withdraw():
         acc, err = check_account(db, account_no, need_amount=amount, session=s)  # E-1余额/E-3状态
         if err:
             return None, err
-        cust, ierr = check_identity(db, acc["customer_id"], id_no, session=s)  # 取款须核验持卡人身份
+        cust, ierr = check_identity(db, acc["customer_id"], ident, session=s)  # 取款须核验持卡人身份（证件号或邮箱）
         if ierr:
             write_audit(db, user_id=g.user["_id"], action=C.TXN_WITHDRAW, object_type="account",
                         object_id=account_no, result=C.RESULT_FAILURE, detail={"reason": ierr[1]}, session=s)
@@ -176,7 +188,7 @@ def transfer():
     from_no = (d.get("from_account_no") or "").strip()
     to_no = (d.get("to_account_no") or "").strip()
     to_bank = (d.get("to_bank") or "").strip()
-    id_no = norm_id(d.get("id_no"))
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 转出方 邮箱或证件号，任一即可核验
     amount = D(d.get("amount") or 0)
 
     if ttype not in ("INTRA", "INTER"):  # 转账类型必须合法，避免非法值被静默当跨行
@@ -194,7 +206,7 @@ def transfer():
         src, err = check_account(db, from_no, need_amount=amount + fee, session=s)  # E-2 余额
         if err:
             return None, err
-        cust, ierr = check_identity(db, src["customer_id"], id_no, session=s)  # 转账须核验转出方身份
+        cust, ierr = check_identity(db, src["customer_id"], ident, session=s)  # 转账须核验转出方身份（证件号或邮箱）
         if ierr:
             write_audit(db, user_id=g.user["_id"], action="TRANSFER", object_type="account",
                         object_id=from_no, result=C.RESULT_FAILURE, detail={"reason": ierr[1]}, session=s)
@@ -252,8 +264,8 @@ def transfer():
 @clerk
 def query():
     account_no = (request.args.get("account_no") or "").strip()
-    customer_no = (request.args.get("customer_no") or "").strip()
-    id_no = norm_id(request.args.get("id_no"))
+    ident = (request.args.get("ident") or request.args.get("id_no")
+             or request.args.get("customer_no") or "").strip()  # 邮箱/证件号/客户号 任一
     start = request.args.get("start")
     end = request.args.get("end")
 
@@ -265,16 +277,16 @@ def query():
         if acc:
             cust = db.customer.find_one({"_id": acc["customer_id"]})
     else:
-        cust = find_customer(db, customer_no=customer_no or None, id_no=id_no or None)
+        cust = find_customer(db, ident=ident or None)
         if cust:
             acc = db.account.find_one({"customer_id": cust["_id"]})
 
     if not cust or not acc:  # E-1 未找到
         return fail("E-1", "未找到账户")
-    if id_no and cust["id_no"] != id_no:  # E-2 证件与账户归属不一致
+    if account_no and ident and not match_identity(cust, ident):  # E-2 身份与账户归属不一致
         write_audit(db, user_id=g.user["_id"], action="QUERY_ACCOUNT", object_type="account",
-                    object_id=acc["account_no"], result=C.RESULT_FAILURE, detail={"reason": "证件不匹配"})
-        return fail("E-2", "证件与账户归属不一致")
+                    object_id=acc["account_no"], result=C.RESULT_FAILURE, detail={"reason": "身份不匹配"})
+        return fail("E-2", "邮箱/证件号与账户归属不一致")
 
     # 时间范围过滤
     q = {"account_id": acc["_id"]}
@@ -305,7 +317,7 @@ def query():
 def card_op():
     d = _body()
     account_no = (d.get("account_no") or "").strip()
-    id_no = norm_id(d.get("id_no"))
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
     op = (d.get("op") or "").strip().upper()  # LOSS 挂失 / UNLOSS 解挂 / REISSUE 补卡
 
     db = get_db()
@@ -313,7 +325,7 @@ def card_op():
     if not acc:
         return fail("E-NOACC", "未找到账户")
     cust = db.customer.find_one({"_id": acc["customer_id"]})
-    if not cust or not id_no or cust["id_no"] != id_no:  # E-1 证件与账户不匹配（挂失/补卡须核验）
+    if not cust or not match_identity(cust, ident):  # E-1 身份与账户不匹配（挂失/补卡须核验）
         write_audit(db, user_id=g.user["_id"], action=f"CARD_{op or 'OP'}", object_type="account",
                     object_id=account_no, result=C.RESULT_FAILURE, detail={"reason": "证件不匹配"})
         return fail("E-1", "证件与账户归属不一致")
@@ -359,14 +371,14 @@ def card_op():
 def close_account():
     d = _body()
     account_no = (d.get("account_no") or "").strip()
-    id_no = norm_id(d.get("id_no"))
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
 
     db = get_db()
     acc = db.account.find_one({"account_no": account_no})
     if not acc:
         return fail("E-NOACC", "未找到账户")
     cust = db.customer.find_one({"_id": acc["customer_id"]})
-    if not cust or not id_no or cust["id_no"] != id_no:  # E-1 身份核验失败（销户须核验）
+    if not cust or not match_identity(cust, ident):  # E-1 身份核验失败（销户须核验）
         write_audit(db, user_id=g.user["_id"], action=C.TXN_CLOSE_ACCOUNT, object_type="account",
                     object_id=account_no, result=C.RESULT_FAILURE, detail={"reason": "身份核验失败"})
         return fail("E-1", "身份核验失败，证件与账户不一致")
@@ -426,14 +438,13 @@ def close_account():
 @clerk
 def update_customer():
     d = _body()
-    id_no = norm_id(d.get("id_no"))
+    ident = (d.get("ident") or d.get("id_no") or d.get("customer_no") or "").strip()  # 邮箱/证件号定位并核验
     db = get_db()
 
-    cust = find_customer(db, customer_no=(d.get("customer_no") or "").strip() or None,
-                         id_no=id_no or None)
+    cust = find_customer(db, ident=ident or None)
     if not cust:  # E-1
         return fail("E-1", "客户不存在，请重新输入查询条件")
-    if not id_no or cust["id_no"] != id_no:  # E-2 身份核验失败（信息更新须核验）
+    if not match_identity(cust, ident):  # E-2 身份核验失败（信息更新须以邮箱/证件号核验）
         return fail("E-2", "身份核验失败")
 
     updates = {}
@@ -447,6 +458,15 @@ def update_customer():
         if not pok:
             return fail("E-3", preason)
         updates["phone"] = normalized
+    if d.get("email") is not None and str(d.get("email")).strip():  # 允许更新邮箱（校验+唯一）
+        eok, ereason, new_email = validate_email(d.get("email"))
+        if not eok:
+            return fail("E-3", ereason)
+        dup = db.customer.find_one({"email": new_email, "_id": {"$ne": cust["_id"]}})
+        if dup:
+            return fail("E-3", "该邮箱已被其他客户使用")
+        old["email"] = cust.get("email")
+        updates["email"] = new_email
 
     # E-4 关键信息（姓名/证件号）变更需二次确认
     for f in ("name", "new_id_no"):

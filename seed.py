@@ -32,8 +32,8 @@ DEFAULT_PARAMS = [
 ]
 
 DEMO_CUSTOMERS = [
-    ("张三", "身份证", "110101199001011234", "13800000001", "10000.00"),
-    ("李四", "身份证", "110101199203054321", "13800000002", "5000.00"),
+    ("张三", "身份证", "110101199001011234", "13800000001", "zhangsan@example.com", "10000.00"),
+    ("李四", "身份证", "110101199203054321", "13800000002", "lisi@example.com", "5000.00"),
 ]
 
 
@@ -69,12 +69,13 @@ def run_seed():
 
     # --- 演示客户 + 储蓄账户 ---
     if db.customer.count_documents({}) == 0:
-        for name, id_type, id_no, phone, balance in DEMO_CUSTOMERS:
+        for name, id_type, id_no, phone, email, balance in DEMO_CUSTOMERS:
             cust = {
                 "customer_no": new_customer_no(),
                 "name": name,
                 "id_type": id_type,
                 "id_no": id_no,
+                "email": email,
                 "phone": phone,
                 "status": C.CUSTOMER_NORMAL,
                 "created_at": now(),

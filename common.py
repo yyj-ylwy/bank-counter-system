@@ -135,15 +135,23 @@ def validate_phone(phone):
     return True, "", p
 
 
-def find_customer(db, *, customer_no=None, id_no=None, phone=None, customer_id=None):
-    """按客户号 / 证件号 / 手机号 / _id 定位客户。"""
+def find_customer(db, *, customer_no=None, id_no=None, phone=None, customer_id=None, email=None, ident=None):
+    """按 客户号/证件号/手机号/邮箱/_id 定位客户。
+    ident 为“邮箱或证件号或客户号”统一标识，供柜面只填一项即可定位客户。"""
     if customer_id:
         _id = oid(customer_id)
         return db.customer.find_one({"_id": _id}) if _id else None
+    if ident and ident.strip():
+        s = ident.strip()
+        return (db.customer.find_one({"id_no": norm_id(s)})
+                or db.customer.find_one({"email": s.lower()})
+                or db.customer.find_one({"customer_no": s}))
     if customer_no:
         return db.customer.find_one({"customer_no": customer_no.strip()})
     if id_no:
         return db.customer.find_one({"id_no": norm_id(id_no)})  # 归一化后匹配，避免尾号 X 大小写不一致
+    if email:
+        return db.customer.find_one({"email": email.strip().lower()})
     if phone:
         return db.customer.find_one({"phone": phone.strip()})
     return None
@@ -154,15 +162,34 @@ def verify_owner(customer, doc):
     return customer and doc and doc.get("customer_id") == customer["_id"]
 
 
-def check_identity(db, customer_id, id_no, session=None):
-    """身份核验：证件号必填且须与该客户一致。返回 (customer, error)。
+def validate_email(email):
+    """校验邮箱格式（必填场景用）。返回 (ok, reason, 规范化小写值)。"""
+    s = (email or "").strip().lower()
+    if not s:
+        return False, "邮箱不能为空", ""
+    if len(s) > 100 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", s):
+        return False, "邮箱格式非法", ""
+    return True, "", s
+
+
+def match_identity(cust, ident):
+    """核对身份标识是否与客户一致：ident 可为证件号或邮箱，任一匹配即通过。"""
+    if not cust or not ident:
+        return False
+    s = str(ident).strip()
+    if not s:
+        return False
+    return norm_id(s) == cust.get("id_no") or (bool(cust.get("email")) and s.lower() == cust["email"])
+
+
+def check_identity(db, customer_id, ident, session=None):
+    """身份核验：须提供“证件号或邮箱”且与该客户一致（任一匹配即通过）。返回 (customer, error)。
     用于取款/转账/外汇买卖/还款等资金或敏感操作，杜绝仅凭账号动他人资金。"""
-    id_no = norm_id(id_no)
-    if not id_no:
-        return None, ("E-ID", "请提供证件号以核验持卡人身份")
+    if not ident or not str(ident).strip():
+        return None, ("E-ID", "请提供证件号或邮箱以核验持卡人身份")
     cust = db.customer.find_one({"_id": customer_id}, session=session)
-    if not cust or cust["id_no"] != id_no:
-        return None, ("E-ID", "身份核验失败：证件号与账户持有人不一致")
+    if not cust or not match_identity(cust, ident):
+        return None, ("E-ID", "身份核验失败：证件号/邮箱与账户持有人不一致")
     return cust, None
 
 
@@ -243,6 +270,7 @@ def customer_view(cust):
         "name": cust["name"],
         "id_type": cust.get("id_type"),
         "id_no": cust["id_no"],
+        "email": cust.get("email"),
         "phone": cust.get("phone"),
         "address": cust.get("address"),
         "occupation": cust.get("occupation"),

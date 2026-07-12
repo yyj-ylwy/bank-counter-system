@@ -159,7 +159,8 @@ def read_rate(db, currency, direction):
     return (r["sell"], "SELL") if direction == "BUY" else (r["buy"], "BUY")
 
 
-# ---------- UC-306 实时汇率查询（Alpha Vantage）----------
+# ---------- UC-306 外汇实时汇率查询（合并原 UC-302 汇率确认与 UC-307 实时挂牌）----------
+# 牌价一律来自实时行情缓存：查询即“确认牌价”，买卖(UC-303)按此换算，无需单独的确认/挂牌步骤。
 @bp.get("/live-rate")
 @clerk
 def live_rate():
@@ -167,36 +168,26 @@ def live_rate():
     rates, failed, cached = refresh_rates(db)
     fmap = dict(failed)
     cur = (request.args.get("currency") or "").strip().upper()
+    direction = (request.args.get("direction") or "").strip().upper()  # 可选 BUY/SELL：给出本次适用价
     wanted = [cur] if cur else list(C.SUPPORTED_CURRENCIES)
     rows = []
     for c in wanted:
         if c not in C.PARAM_FX:
             rows.append({"currency": c, "error": "不支持的币种"}); continue
         r = rates.get(c)
-        if r:
-            rows.append({"currency": c, "mid": float(r["mid"]), "buy": float(r["buy"]),
-                         "sell": float(r["sell"]), "as_of": r["as_of"]})
-        else:
-            rows.append({"currency": c, "error": fmap.get(c, "行情暂不可用")})
+        if not r:
+            rows.append({"currency": c, "error": fmap.get(c, "行情暂不可用")}); continue
+        row = {"currency": c, "mid": float(r["mid"]), "buy": float(r["buy"]),
+               "sell": float(r["sell"]), "as_of": r["as_of"]}
+        if direction in ("BUY", "SELL"):  # 客户买入外币用卖出价、卖出外币用买入价
+            row["apply_rate"] = float(r["sell"]) if direction == "BUY" else float(r["buy"])
+            row["apply_rate_type"] = "SELL" if direction == "BUY" else "BUY"
+        rows.append(row)
+    write_audit(db, user_id=g.user["_id"], action="FX_RATE_QUERY", object_type="system_param",
+                object_id=cur or "ALL", result=C.RESULT_SUCCESS,
+                detail={"currency": cur or "ALL", "direction": direction or None, "from_cache": cached})
     return ok({"rates": rows, "from_cache": cached, "cache_ttl_min": _RATE_TTL // 60,
-               "note": "买入价=银行买入(客户卖出)、卖出价=银行卖出(客户买入)；牌价来自实时行情，全部币种一次拉齐并缓存 30 分钟，期间不再调用行情接口。"})
-
-
-# ---------- UC-307 实时行情挂牌（确认当前实时牌价，供买卖换算）----------
-@bp.post("/sync-rate")
-@clerk
-def sync_rate():
-    db = get_db()
-    rates, failed, cached = refresh_rates(db)
-    if not rates:
-        return fail("E-LIVE", "行情挂牌失败：" + (failed[0][1] if failed else "无可用行情，请稍后再试"))
-    listed = [{"currency": c, "buy": float(v["buy"]), "sell": float(v["sell"]), "mid": float(v["mid"])}
-              for c, v in rates.items()]
-    write_audit(db, user_id=g.user["_id"], action="FX_RATE_SYNC", object_type="system_param",
-                object_id="-", result=C.RESULT_SUCCESS, detail={"listed": listed, "from_cache": cached})
-    return ok({"listed": listed, "failed": [{"currency": c, "reason": r} for c, r in failed],
-               "from_cache": cached},
-              (("行情缓存有效(30分钟内)，" if cached else "已拉取实时行情，") + f"当前挂牌 {len(listed)} 个币种，外汇买卖即按此牌价换算"))
+               "note": "买入价=银行买入(客户卖出)、卖出价=银行卖出(客户买入)；牌价来自实时行情，全部币种一次拉齐并缓存 30 分钟，期间不再调用行情接口。外汇买卖即按此实时牌价换算。"})
 
 
 # ---------- UC-301 外汇子户开立 ----------
@@ -205,8 +196,7 @@ def sync_rate():
 def open_subaccount():
     d = _body()
     db = get_db()
-    cust = find_customer(db, customer_no=(d.get("customer_no") or "").strip() or None,
-                         id_no=(d.get("id_no") or "").strip() or None)
+    cust = find_customer(db, ident=(d.get("ident") or d.get("id_no") or d.get("customer_no") or "").strip() or None)
     if not cust:
         return fail("E-NOCUST", "未找到客户")
     currency = (d.get("currency") or "").strip().upper()
@@ -238,41 +228,13 @@ def open_subaccount():
     return ok({"fx_account": fx_view(fx, cust, base)}, "外汇子户开立成功")
 
 
-# ---------- UC-302 汇率查询与确认 ----------
-@bp.get("/rate")
-@clerk
-def rate():
-    currency = (request.args.get("currency") or "").strip().upper()
-    direction = (request.args.get("direction") or "BUY").strip().upper()  # 客户买入/卖出
-    db = get_db()
-    if currency not in C.PARAM_FX:
-        return fail("E-CUR", "不支持的币种", 400)
-    if direction not in ("BUY", "SELL"):  # 方向非法不再静默按卖出处理
-        return fail("E-DIR", "交易方向非法（买入/卖出）", 400)
-    rates, _failed, cached = refresh_rates(db)  # 命中 30 分钟缓存则不调 API；否则一次拉齐全部币种
-    r = rates.get(currency)
-    if not r:  # E-1 实时牌价暂不可用（未配 Key / 限流 / 网络异常）
-        return fail("E-1", "该币种实时牌价暂不可用（行情未配置/限流/网络异常），请稍后重试")
-    apply_rate, rtype = (r["sell"], "SELL") if direction == "BUY" else (r["buy"], "BUY")
-    write_audit(db, user_id=g.user["_id"], action="FX_RATE_CONFIRM", object_type="system_param",
-                object_id=currency, result=C.RESULT_SUCCESS, detail={"direction": direction})
-    return ok({
-        "currency": currency,
-        "buy_rate": float(r["buy"]), "sell_rate": float(r["sell"]), "mid_rate": float(r["mid"]),
-        "apply_rate": float(apply_rate), "apply_rate_type": rtype,
-        "direction": direction,
-        "effective_at": r["as_of"], "from_cache": cached,
-        "note": "客户买入外币用卖出价，客户卖出外币用买入价；牌价来自实时行情（30 分钟缓存）",
-    })
-
-
 # ---------- UC-303 外汇买卖确认 ----------
 @bp.post("/trade")
 @clerk
 def trade():
     d = _body()
     fx_no = (d.get("fx_account_no") or "").strip()
-    id_no = norm_id(d.get("id_no"))
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
     direction = (d.get("direction") or "").strip().upper()  # BUY=客户买入外币 / SELL=客户卖出外币
     foreign = D(d.get("amount") or 0)  # 外币金额
     if direction not in ("BUY", "SELL"):
@@ -284,7 +246,7 @@ def trade():
     fx = db.fx_account.find_one({"fx_account_no": fx_no})
     if not fx:
         return fail("E-NOFX", "未找到外汇子户")
-    cust, ierr = check_identity(db, fx["customer_id"], id_no)  # 外汇买卖须核验持卡人身份
+    cust, ierr = check_identity(db, fx["customer_id"], ident)  # 外汇买卖须核验持卡人身份（证件号或邮箱）
     if ierr:
         write_audit(db, user_id=g.user["_id"], action="FX_TRADE", object_type="fx_account",
                     object_id=fx_no, result=C.RESULT_FAILURE, detail={"reason": ierr[1]})
@@ -410,8 +372,8 @@ def change():
 def query():
     db = get_db()
     fx_no = (request.args.get("fx_account_no") or "").strip()
-    customer_no = (request.args.get("customer_no") or "").strip()
-    id_no = (request.args.get("id_no") or "").strip()
+    ident = (request.args.get("ident") or request.args.get("id_no")
+             or request.args.get("customer_no") or "").strip()  # 邮箱/证件号/客户号 任一
 
     fx_accounts = []
     if fx_no:
@@ -419,7 +381,7 @@ def query():
         if fx:
             fx_accounts = [fx]
     else:
-        cust = find_customer(db, customer_no=customer_no or None, id_no=id_no or None)
+        cust = find_customer(db, ident=ident or None)
         if cust:
             fx_accounts = list(db.fx_account.find({"customer_id": cust["_id"]}))
     if not fx_accounts:  # E-1

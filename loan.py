@@ -83,8 +83,7 @@ def loan_view(db, ln, with_customer=True):
 def apply():
     d = _body()
     db = get_db()
-    cust = find_customer(db, customer_no=(d.get("customer_no") or "").strip() or None,
-                         id_no=(d.get("id_no") or "").strip() or None)
+    cust = find_customer(db, ident=(d.get("ident") or d.get("id_no") or d.get("customer_no") or "").strip() or None)
     if not cust:
         return fail("E-NOCUST", "未找到客户，请先核对客户信息")
 
@@ -255,7 +254,7 @@ def repay():
     contract_no = (d.get("contract_no") or "").strip()
     amount = D(d.get("amount") or 0)
     account_no = (d.get("account_no") or "").strip()
-    id_no = norm_id(d.get("id_no"))
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
     if amount <= 0:
         return fail("E-AMT", "还款金额必须大于零", 400)
 
@@ -283,7 +282,7 @@ def repay():
         acc, err = check_account(db, repay_no, need_amount=amount, session=s)  # E-1 余额不足
         if err:
             return None, err
-        cust, ierr = check_identity(db, acc["customer_id"], id_no, session=s)  # 核验扣款账户持有人身份
+        cust, ierr = check_identity(db, acc["customer_id"], ident, session=s)  # 核验扣款账户持有人身份（证件号或邮箱）
         if ierr:
             return None, ierr
         if acc["customer_id"] != loan["customer_id"]:  # 扣款账户须属该贷款客户，杜绝用他人余额还他人贷款
