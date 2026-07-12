@@ -21,16 +21,29 @@ const API = {
 
 // ---------- 结果渲染工具（供 operations.js 使用）----------
 function esc(v) { return String(v == null ? '' : v).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-function money(v) { return v == null || v === '' ? '' : Number(v).toFixed(2); }
+function money(v) {
+  if (v == null || v === '') return '';
+  return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+// 每个用例的菜单图标（纯展示，按用例编号取；未命中用默认点）
+const ICONS = {
+  'UC-101': '🆕', 'UC-102': '💰', 'UC-103': '💸', 'UC-104': '🔄', 'UC-105': '🔍', 'UC-106': '🪪', 'UC-107': '🗑️', 'UC-108': '✏️',
+  'UC-201': '📋', 'UC-202': '✅', 'UC-203': '🏦', 'UC-204': '💵', 'UC-205': '⏰', 'UC-205b': '📞', 'UC-206': '📊',
+  'UC-301': '🌐', 'UC-302': '💱', 'UC-303': '🔁', 'UC-304': '⚙️', 'UC-305': '🔍',
+  'UC-401': '💳', 'UC-402': '✅', 'UC-403': '🧾', 'UC-404': '💵', 'UC-405': '🏧', 'UC-406': '🔒', 'UC-4Q': '🔍',
+  'UC-501': '👥', 'UC-501b': '➕', 'UC-501c': '✏️', 'UC-502': '⚙️', 'UC-502b': '🛠️', 'UC-503': '📜', 'UC-504': '💾', 'UC-504b': '♻️',
+};
+const icon = code => ICONS[code] || '▪️';
 function kv(obj) {
   return '<table class="kv">' + Object.entries(obj).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('') + '</table>';
 }
 function tbl(rows, cols) {
   if (!rows || !rows.length) return '<p class="hint">无数据</p>';
-  const head = '<tr>' + cols.map(c => `<th>${esc(c.label)}</th>`).join('') + '</tr>';
+  const head = '<tr>' + cols.map(c => `<th${c.fmt === money ? ' class="num"' : ''}>${esc(c.label)}</th>`).join('') + '</tr>';
   const body = rows.map(r => '<tr>' + cols.map(c => {
     const val = c.fmt ? c.fmt(r[c.k]) : r[c.k];
-    return `<td>${esc(val)}</td>`;
+    const cls = c.fmt === money ? ' class="num"' : '';
+    return `<td${cls}>${esc(val)}</td>`;
   }).join('') + '</tr>').join('');
   return `<table class="grid">${head}${body}</table>`;
 }
@@ -70,7 +83,7 @@ function showApp() {
   $('who').textContent = `${currentUser.name}（${currentUser.role_label}）`;
   const ops = OPERATIONS[currentUser.role] || [];
   $('menu').innerHTML = ops.map((op, i) =>
-    `<li data-i="${i}"><span class="code">${op.code}</span>${esc(op.name)}</li>`).join('');
+    `<li data-i="${i}"><span class="ic">${icon(op.code)}</span><span class="mtext"><span class="code">${op.code}</span>${esc(op.name)}</span></li>`).join('');
   [...$('menu').children].forEach(li => li.onclick = () => selectOp(ops[+li.dataset.i], li));
   if (ops.length) selectOp(ops[0], $('menu').firstElementChild);
 }
@@ -80,10 +93,10 @@ function selectOp(op, li) {
   [...$('menu').children].forEach(x => x.classList.remove('active'));
   if (li) li.classList.add('active');
   const fieldsHtml = op.fields.map(f => renderField(f)).join('');
-  const uploadHtml = op.type === 'upload' ? `<div class="field"><label>备份文件</label><input type="file" id="f_file" accept=".json"></div>` : '';
+  const uploadHtml = op.type === 'upload' ? `<div class="field full"><label>备份文件</label><input type="file" id="f_file" accept=".json"></div>` : '';
   $('content').innerHTML = `
     <div class="panel">
-      <h2><span class="code">${op.code}</span>${esc(op.name)}</h2>
+      <h2><span class="ic-lg">${icon(op.code)}</span><span class="code">${op.code}</span>${esc(op.name)}</h2>
       ${op.hint ? `<p class="hint">${esc(op.hint)}</p>` : ''}
       <form id="opform">${fieldsHtml}${uploadHtml}
         <button type="submit" class="btn">${op.type === 'download' ? '生成并下载' : '提交'}</button>
@@ -92,6 +105,8 @@ function selectOp(op, li) {
       <div id="result"></div>
     </div>`;
   $('opform').onsubmit = e => { e.preventDefault(); submitOp(op); };
+  const first = $('opform').querySelector('input:not([type=checkbox]):not([type=file]), select');
+  if (first) first.focus();
 }
 
 function renderField(f) {
@@ -139,13 +154,21 @@ async function submitOp(op) {
   let values;
   try { values = gather(op); } catch (err) { return banner('err', err.message); }
 
-  if (op.type === 'download') return doDownload(op);
-  if (op.type === 'upload') return doUpload(op, values);
-
-  const req = op.method === 'GET' ? { query: values } : { body: values };
-  const { status, data } = await API.call(op.method, op.path, req);
-  if (status === 401) { alert('登录已过期，请重新登录'); return logout(); }
-  handleResult(op, data);
+  const btn = $('opform').querySelector('button[type=submit]');
+  const label = btn.textContent;
+  btn.disabled = true; btn.classList.add('loading'); btn.textContent = '处理中';
+  try {
+    if (op.type === 'download') return await doDownload(op);
+    if (op.type === 'upload') return await doUpload(op, values);
+    const req = op.method === 'GET' ? { query: values } : { body: values };
+    const { status, data } = await API.call(op.method, op.path, req);
+    if (status === 401) { alert('登录已过期，请重新登录'); return logout(); }
+    handleResult(op, data);
+  } catch (err) {
+    banner('err', '请求失败：' + (err.message || '网络错误'));
+  } finally {
+    btn.disabled = false; btn.classList.remove('loading'); btn.textContent = label;
+  }
 }
 
 function handleResult(op, data) {
