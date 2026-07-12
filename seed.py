@@ -6,7 +6,7 @@ from werkzeug.security import generate_password_hash
 
 import constants as C
 from db import get_db
-from common import (m, now, new_customer_no, new_account_no, new_debit_card_no)
+from common import (m, D, now, write_txn, new_customer_no, new_account_no, new_debit_card_no)
 
 # 演示账号（README 里公布）。生产环境请让管理员改密码。
 DEMO_USERS = [
@@ -85,7 +85,7 @@ def run_seed():
                 "created_at": now(),
             }
             cid = db.customer.insert_one(cust).inserted_id
-            db.account.insert_one({
+            acc = {
                 "account_no": new_account_no(),
                 "customer_id": cid,
                 "card_no": new_debit_card_no(),
@@ -94,5 +94,9 @@ def run_seed():
                 "balance": m(balance),
                 "status": C.ACCOUNT_NORMAL,
                 "created_at": now(),
-            })
+            }
+            aid = db.account.insert_one(acc).inserted_id
+            # 补一条开户流水，保持"账户余额 = 流水净额"不变式（对账用）
+            write_txn(db, business_type=C.TXN_OPEN, amount=D(balance), user_id=admin_id,
+                      customer_id=cid, account_id=aid)
         print(f"[seed] 已创建 {len(DEMO_CUSTOMERS)} 个演示客户及账户")

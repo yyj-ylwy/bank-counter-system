@@ -99,10 +99,9 @@ def ensure_indexes():
     db.loan.create_index([("contract_no", ASCENDING)], unique=True)
     db.loan.create_index([("customer_id", ASCENDING)])
     db.fx_account.create_index([("fx_account_no", ASCENDING)], unique=True)
-    try:
+    # 删旧的非唯一索引（历史遗留），仅当存在才删，避免每次启动都抛/吞异常
+    if "customer_id_1_currency_1" in [ix["name"] for ix in db.fx_account.list_indexes()]:
         db.fx_account.drop_index("customer_id_1_currency_1")
-    except Exception:
-        pass
     try:
         db.fx_account.create_index([("customer_id", ASCENDING), ("currency", ASCENDING)], unique=True,
                                    name="uk_fx_customer_currency_active",

@@ -102,10 +102,11 @@ def apply():
     # E-1 黑名单 / 严重逾期
     if cust["status"] == C.CUSTOMER_BLACKLIST:
         return fail("E-1", "客户处于黑名单，拒绝办理")
-    # 逾期 = 已标记 OVERDUE，或 ACTIVE 但已过到期日且未还清
+    # 逾期 = 已标记 OVERDUE，或 ACTIVE 但已过到期日且未还清（用今日零点，与还款/罚息的日历日口径一致）
+    today0 = now().replace(hour=0, minute=0, second=0, microsecond=0)
     if db.loan.count_documents({"customer_id": cust["_id"], "$or": [
             {"status": C.LOAN_OVERDUE},
-            {"status": C.LOAN_ACTIVE, "due_date": {"$lt": now()}, "balance": {"$gt": m(0)}}]}):
+            {"status": C.LOAN_ACTIVE, "due_date": {"$lt": today0}, "balance": {"$gt": m(0)}}]}):
         return fail("E-1", "客户存在逾期贷款，拒绝办理")
 
     if account_no:  # 指定账户必须属于本客户且状态正常，杜绝把贷款打进他人账户
@@ -370,8 +371,8 @@ def overdue_record():
     ln = db.loan.find_one({"contract_no": contract_no})
     if not ln:
         return fail("E-NOLOAN", "未找到贷款")
-    if ln["status"] == C.LOAN_PAID_OFF:  # E-2 已结清
-        return fail("E-2", "贷款已结清，无需逾期处理")
+    if ln["status"] not in (C.LOAN_ACTIVE, C.LOAN_OVERDUE):  # 仅存续/逾期贷款可催收登记
+        return fail("E-2", f"贷款当前为「{C.LOAN_STATUS_LABEL.get(ln['status'])}」，无需逾期催收")
 
     entry = {"time": now().strftime("%Y-%m-%d %H:%M:%S"),
              "method": (d.get("method") or "").strip(),

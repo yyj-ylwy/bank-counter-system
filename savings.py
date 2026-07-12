@@ -383,6 +383,9 @@ def close_account():
         if db.credit_card_bill.count_documents({"credit_card_id": {"$in": card_ids},
                                                 "status": {"$in": [C.BILL_UNPAID, C.BILL_PARTIAL]}}):
             return fail("E-6", "该客户存在未结清信用卡账单，请先还清后再销户")
+        # 已用未清额度（含预借现金后尚未出账的欠款）也需先清偿
+        if any(dec(c.get("credit_limit", 0)) - dec(c.get("available_limit", 0)) > 0 for c in active_cards):
+            return fail("E-6", "该客户信用卡存在已用未清额度（含未出账欠款），请先还清后再销户")
     if dec(acc["balance"]) > 0:  # E-5 余额未清零
         return fail("E-5", f"账户仍有余额 {dec(acc['balance'])}，请先取款或转账清零")
 
@@ -431,7 +434,7 @@ def update_customer():
     old = {}
     for f in ("phone", "address", "occupation"):
         if f in d and d[f] is not None:
-            updates[f] = str(d[f]).strip()
+            updates[f] = str(d[f]).strip()[:C.TEXT_MAX]  # 文本长度上限，防超长脏数据
             old[f] = cust.get(f)
     if "phone" in updates:  # E-3 手机号格式（与开户同一套规则）
         pok, preason, normalized = validate_phone(updates["phone"])
@@ -446,6 +449,10 @@ def update_customer():
                 return fail("E-4", "涉及姓名/证件号等关键信息变更，请二次确认（confirm=true）并填写原因")
             target = "name" if f == "name" else "id_no"
             new_val = str(d[f]).strip()
+            if target == "name" and not new_val:  # 姓名不能被清空（与开户一致的非空不变式）
+                return fail("E-REQ", "姓名不能为空", 400)
+            if target == "name":
+                new_val = new_val[:C.TEXT_MAX]
             if target == "id_no":
                 valid, reason, new_val = validate_id_no(cust.get("id_type", "身份证"), new_val)  # 归一化
                 if not valid:

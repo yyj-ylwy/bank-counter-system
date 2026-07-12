@@ -178,21 +178,26 @@ def generate_bill():
         return fail("E-DUP", f"账期 {cycle} 的账单已存在")
     min_rate = get_param_dec(db, C.P_CC_MIN_REPAY_RATE, "0.10")
 
+    # 账期月份区间：只归集交易时间落在该账期(YYYYMM 当月)内的未入账流水，防把其它月份债务塞进本账期错期
+    cy, cm = int(cycle[:4]), int(cycle[4:])
+    nm, ny = (cm % 12) + 1, cy + (1 if cm == 12 else 0)
+    cycle_start = now().replace(year=cy, month=cm, day=1, hour=0, minute=0, second=0, microsecond=0)
+    cycle_end = now().replace(year=ny, month=nm, day=1, hour=0, minute=0, second=0, microsecond=0)
+
     def txn(s):
-        # 汇总本卡尚未入账的消费/取现/手续费流水（事务内查+标记，避免账单与入账不一致导致重复计费）
+        # 汇总本账期内尚未入账的消费/取现/手续费流水（事务内查+标记，避免账单与入账不一致导致重复计费）
         unbilled = list(db.business_transaction.find({
             "related_id": cc["_id"],
             "business_type": {"$in": [C.TXN_CC_CASH, C.TXN_CC_CASH_FEE]},
-            "bill_cycle": {"$exists": False}}, session=s))
+            "bill_cycle": {"$exists": False},
+            "txn_time": {"$gte": cycle_start, "$lt": cycle_end}}, session=s))
         total = sum((dec(t["amount"]) for t in unbilled), D(0))
         details = [{"txn_no": t["txn_no"], "type": C.TXN_TYPE_LABEL.get(t["business_type"]),
                     "amount": float(dec(t["amount"])),
                     "time": t["txn_time"].strftime("%Y-%m-%d %H:%M:%S")} for t in unbilled]
         # 到期日 = 账期次月的还款日(repay_day)号，与审批录入的还款日一致，不随出账时间漂移
-        cy, cm = int(cycle[:4]), int(cycle[4:])
-        dm, dy = (cm % 12) + 1, cy + (1 if cm == 12 else 0)
         rday = min(int(cc.get("repay_day") or 25), 28)
-        due = now().replace(year=dy, month=dm, day=rday, hour=0, minute=0, second=0, microsecond=0)
+        due = now().replace(year=ny, month=nm, day=rday, hour=0, minute=0, second=0, microsecond=0)
         bill = {
             "credit_card_id": cc["_id"], "bill_cycle": cycle,
             "total_amount": m(total), "paid_amount": m(0), "min_repay": m(D(total * min_rate)),
@@ -205,7 +210,8 @@ def generate_bill():
             db.business_transaction.update_many(
                 {"_id": {"$in": [t["_id"] for t in unbilled]}}, {"$set": {"bill_cycle": cycle}}, session=s)
         write_audit(db, user_id=g.user["_id"], action="CC_BILL", object_type="credit_card_bill",
-                    object_id=cycle, result=C.RESULT_SUCCESS, detail={"total": str(total)}, session=s)
+                    object_id=card_no, result=C.RESULT_SUCCESS,
+                    detail={"card_no": card_no, "cycle": cycle, "total": str(total)}, session=s)
         return bill
 
     try:
@@ -277,7 +283,7 @@ def repay():
                                   {"$set": {"available_limit": m(new_avail)}}, session=s)
         new_paid = dec(bill2["paid_amount"]) + pay
         new_status = C.BILL_PAID if new_paid >= dec(bill2["total_amount"]) else C.BILL_PARTIAL
-        log = {"time": now().strftime("%Y-%m-%d %H:%M:%S"), "amount": float(pay),
+        log = {"time": now().strftime("%Y-%m-%d %H:%M:%S"), "amount": m(pay),
                "type": repay_type, "account_no": account_no}
         db.credit_card_bill.update_one({"_id": bill2["_id"]},
                                        {"$set": {"paid_amount": m(new_paid), "status": new_status},
@@ -346,6 +352,14 @@ def cash_advance():
             return None, ("E-2", f"可用额度不足，取现+手续费需 {amount + fee}，可用 {dec(cc2['available_limit'])}")
         if _today_cash(db, cc2["_id"], s) + amount > daily_limit:  # E-2 超单日限额
             return None, ("E-2", f"超过预借现金单日限额 {daily_limit}")
+        # 先校验出款账户（若指定），全部通过后再动账；避免校验失败却已扣额度/写流水（单机无事务时不可回滚）
+        acc = None
+        if payout_account:
+            acc, err = check_account(db, payout_account, session=s)
+            if err:
+                return None, ("E-PAYOUT", f"出款账户不可用：{err[1]}")
+            if not verify_owner(cust, acc):
+                return None, ("E-OWNER", "出款账户不属于该持卡客户")
         new_avail = dec(cc2["available_limit"]) - amount - fee
         db.credit_card.update_one({"_id": cc2["_id"]},
                                   {"$set": {"available_limit": m(new_avail)}}, session=s)
@@ -355,12 +369,7 @@ def cash_advance():
             write_txn(db, business_type=C.TXN_CC_CASH_FEE, amount=fee, user_id=g.user["_id"],
                       customer_id=cc2["customer_id"], related_id=cc2["_id"], session=s)
         payout_msg = "现金出款"
-        if payout_account:  # 转入储蓄账户
-            acc, err = check_account(db, payout_account, session=s)
-            if err:
-                return None, ("E-PAYOUT", f"出款账户不可用：{err[1]}")
-            if not verify_owner(cust, acc):
-                return None, ("E-OWNER", "出款账户不属于该持卡客户")
+        if acc is not None:  # 转入储蓄账户
             db.account.update_one({"_id": acc["_id"]},
                                   {"$set": {"balance": m(dec(acc["balance"]) + amount)}}, session=s)
             write_txn(db, business_type=C.TXN_CC_CASH_PAYOUT, amount=amount, user_id=g.user["_id"],

@@ -174,6 +174,7 @@ def t_savings():
     ok("108 手机号格式非法→E-3 [边界]", E(api("POST", "/api/savings/update-customer", S, json={"customer_no": u["customer_no"], "id_no": u["id_no"], "phone": "123"})) == "E-3")
     ok("108 改名未确认→E-4 [条件]", E(api("POST", "/api/savings/update-customer", S, json={"customer_no": u["customer_no"], "id_no": u["id_no"], "name": "新名"})) == "E-4")
     ok("108 改证件号被占用→E-3 [组合]", E(api("POST", "/api/savings/update-customer", S, json={"customer_no": u["customer_no"], "id_no": u["id_no"], "new_id_no": dup["id_no"], "confirm": True})) == "E-3")
+    ok("108 姓名改为空白→E-REQ [边界]", E(api("POST", "/api/savings/update-customer", S, json={"customer_no": u["customer_no"], "id_no": u["id_no"], "name": "   ", "confirm": True, "reason": "x"})) == "E-REQ")
     ok("108 更新手机地址成功 [正常流]", OK(api("POST", "/api/savings/update-customer", S, json={"customer_no": u["customer_no"], "id_no": u["id_no"], "phone": "13900000000", "address": "北京"})))
     ok("108 改名+确认成功 [组合]", OK(api("POST", "/api/savings/update-customer", S, json={"customer_no": u["customer_no"], "id_no": u["id_no"], "name": "新名", "confirm": True, "reason": "更正"})))
 
@@ -249,6 +250,7 @@ def t_loan():
     ok("205 高天数过滤跳过 [边界]", OK(api("GET", "/api/loan/overdue", L, query={"days": "9999"})))
     ok("205b 合同不存在→E-NOLOAN [判定]", E(api("POST", "/api/loan/overdue", L, json={"contract_no": "X"})) == "E-NOLOAN")
     ok("205b 催收并置逾期 [组合]", OK(api("POST", "/api/loan/overdue", L, json={"contract_no": lo, "method": "电话", "note": "承诺还款"})))
+    ok("205b 已拒绝贷款催收→E-2 [状态机]", E(api("POST", "/api/loan/overdue", L, json={"contract_no": ln_rej})) == "E-2")
 
     # UC-206 查询统计
     ok("206 日期非法→E-DATE [判定]", E(api("GET", "/api/loan/query", L, query={"start": "2026/1/1"})) == "E-DATE")
@@ -347,6 +349,8 @@ def t_creditcard():
     ok("405 未提供证件→E-REQ [判定]", E(api("POST", "/api/creditcard/cash-advance", CCK, json={"card_no": card, "amount": "100"})) == "E-REQ")
     ok("405 身份核验失败→E-3 [组合]", E(api("POST", "/api/creditcard/cash-advance", CCK, json={"card_no": card, "id_no": gen_id(), "amount": "100"})) == "E-3")
     ok("405 出款账户非本人→E-OWNER [组合]", E(api("POST", "/api/creditcard/cash-advance", CCK, json={"card_no": card, "id_no": cust["id_no"], "amount": "100", "payout_account": open_acct()["account_no"]})) == "E-OWNER")
+    q405 = api("GET", "/api/creditcard/query", CCK, query={"card_no": card})
+    ok("405 出款校验失败未扣额度(先校验后动账) [资金]", OK(q405) and q405["data"]["cards"][0]["available_limit"] == 20000.0)
     ok("405 现金取现成功 [正常流]", OK(api("POST", "/api/creditcard/cash-advance", CCK, json={"card_no": card, "id_no": cust["id_no"], "amount": "1000"})))
 
     # UC-403 账单

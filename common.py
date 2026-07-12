@@ -295,7 +295,8 @@ def parse_date_range(start, end):
             rng["$gte"] = _dt.strptime(start.strip(), "%Y-%m-%d")
         if end:
             e = _dt.strptime(end.strip(), "%Y-%m-%d")
-            rng["$lte"] = e.replace(hour=23, minute=59, second=59)
+            # 上界用次日零点 + $lt，涵盖当天最后一秒带微秒的记录（$lte 到 23:59:59 会漏掉 .000001~.999999）
+            rng["$lt"] = e.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     except ValueError:
         return None
     return rng
