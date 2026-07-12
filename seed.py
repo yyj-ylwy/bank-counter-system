@@ -19,12 +19,7 @@ DEMO_USERS = [
 
 # 系统参数默认值（管理员可在系统管理里修改，无需改代码）
 DEFAULT_PARAMS = [
-    ("FX_RATE", "FX_USD_BUY", "7.10"),
-    ("FX_RATE", "FX_USD_SELL", "7.25"),
-    ("FX_RATE", "FX_EUR_BUY", "7.70"),
-    ("FX_RATE", "FX_EUR_SELL", "7.90"),
-    ("FX_RATE", "FX_JPY_BUY", "0.047000"),
-    ("FX_RATE", "FX_JPY_SELL", "0.050000"),
+    # 外汇牌价不再落种子兜底：一律按需从 Alpha Vantage 实时拉取、缓存 30 分钟（见 forex.refresh_rates）。
     ("RATE", C.P_LOAN_RATE, "0.0435"),
     ("RATE", C.P_LOAN_OVERDUE_RATE, "0.0005"),
     ("LIMIT", C.P_WITHDRAW_DAILY_LIMIT, "50000"),

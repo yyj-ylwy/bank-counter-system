@@ -3,7 +3,7 @@
 
 const ID_TYPES = ['身份证', '护照', '港澳通行证', '军官证'];
 // 币种：显示中文，提交仍用 USD/EUR/JPY
-const CURRENCIES = [{ value: 'USD', label: '美元(USD)' }, { value: 'EUR', label: '欧元(EUR)' }, { value: 'JPY', label: '日元(JPY)' }];
+const CURRENCIES = [{ value: 'USD', label: '美元(USD)' }, { value: 'EUR', label: '欧元(EUR)' }, { value: 'JPY', label: '日元(JPY)' }, { value: 'GBP', label: '英镑(GBP)' }, { value: 'HKD', label: '港元(HKD)' }, { value: 'AUD', label: '澳元(AUD)' }, { value: 'CAD', label: '加元(CAD)' }, { value: 'CHF', label: '瑞郎(CHF)' }, { value: 'SGD', label: '新元(SGD)' }];
 
 // 汇率方向类型（后端返回英文 BUY/SELL）→ 中文
 const FX_RATE_TYPE_LABEL = { BUY: '买入价', SELL: '卖出价' };
