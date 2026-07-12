@@ -44,16 +44,22 @@ def open_account():
         return fail("E-AMT", "初始存款金额不能为负", 400)
 
     db = get_db()
-    if db.customer.find_one({"id_no": id_no}):  # E-1 证件号已存在
-        return fail("E-1", "该证件号已关联客户，可转为信息更新")
+    existing = db.customer.find_one({"id_no": id_no})
+    # 已有在用账户才算重复；若客户曾销户(无正常账户)，允许复用客户重新开户，不永久锁死
+    if existing and db.account.find_one({"customer_id": existing["_id"], "status": C.ACCOUNT_NORMAL}):
+        return fail("E-1", "该证件号已关联在用账户，可转为信息更新")
 
     def txn(s):
-        cust = {
-            "customer_no": new_customer_no(s), "name": name, "id_type": id_type,
-            "id_no": id_no, "phone": phone, "status": C.CUSTOMER_NORMAL, "created_at": now(),
-        }
-        cid = db.customer.insert_one(cust, session=s).inserted_id
-        cust["_id"] = cid
+        if existing:  # 复用既有客户，仅新开账户
+            cust = existing
+            cid = existing["_id"]
+        else:
+            cust = {
+                "customer_no": new_customer_no(s), "name": name, "id_type": id_type,
+                "id_no": id_no, "phone": phone, "status": C.CUSTOMER_NORMAL, "created_at": now(),
+            }
+            cid = db.customer.insert_one(cust, session=s).inserted_id
+            cust["_id"] = cid
         acc = {
             "account_no": new_account_no(s), "customer_id": cid, "card_no": new_debit_card_no(s),
             "card_status": C.CARD_NORMAL, "currency": "CNY", "balance": m(init),

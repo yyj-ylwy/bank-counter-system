@@ -166,6 +166,7 @@ def t_savings():
     ok("107 余额未清零→E-5 [边界]", E(api("POST", "/api/savings/close-account", S, json={"account_no": clb["account_no"], "id_no": clb["id_no"]})) == "E-5")
     clok = open_acct()
     ok("107 正常销户成功 [正常流]", OK(api("POST", "/api/savings/close-account", S, json={"account_no": clok["account_no"], "id_no": clok["id_no"]})))
+    ok("101 销户后可重新开户 [生命周期]", OK(api("POST", "/api/savings/open-account", S, json={"name": "重开客户", "id_type": "身份证", "id_no": clok["id_no"]})))
 
     # UC-108 客户信息更新
     u = open_acct()
@@ -359,6 +360,7 @@ def t_creditcard():
     ok("403 卡不存在→E-NOCARD [判定]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": "X"})) == "E-NOCARD")
     ok("403 账期格式非法→E-CYCLE [判定]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": card, "bill_cycle": "2024-13"})) == "E-CYCLE")
     ok("403 账期月份13→E-CYCLE [边界]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": card, "bill_cycle": "202413"})) == "E-CYCLE")
+    ok("403 未来账期→E-CYCLE [边界]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": card, "bill_cycle": "209912"})) == "E-CYCLE")
     r = api("POST", "/api/creditcard/bill", CCK, json={"card_no": card})
     ok("403 账单生成成功(有取现) [正常流]", OK(r))
     ok("403 账期重复→E-DUP [判定]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": card})) == "E-DUP")

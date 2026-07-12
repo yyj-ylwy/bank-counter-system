@@ -181,6 +181,9 @@ def generate_bill():
     # 账期次月1号为归集上界：把所有【早于本账期截止】且尚未入账的取现/手续费滚入本期账单，
     # 既排除未来月份债务(不塞进过去账期)，又不会因先出过空账单而让后续取现永远无法入账。
     cy, cm = int(cycle[:4]), int(cycle[4:])
+    _cur = now()
+    if (cy, cm) > (_cur.year, _cur.month):  # 不能为尚未结束的未来账期出账，否则把当期欠款卷入未来账单、推迟到期日
+        return fail("E-CYCLE", "不能为尚未结束的未来账期出账", 400)
     nm, ny = (cm % 12) + 1, cy + (1 if cm == 12 else 0)
     cycle_end = now().replace(year=ny, month=nm, day=1, hour=0, minute=0, second=0, microsecond=0)
 

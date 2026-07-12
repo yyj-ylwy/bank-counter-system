@@ -33,7 +33,7 @@ const ACTION_LABEL = {
 const OBJECT_LABEL = {
   account: '储蓄账户', customer: '客户', loan: '贷款', fx_account: '外汇账户',
   credit_card: '信用卡', credit_card_bill: '信用卡账单', user_account: '操作员账号',
-  system_param: '系统参数', database: '数据库',
+  system_param: '系统参数', database: '数据库', audit_log: '审计日志',
   business_transaction: '业务流水', counters: '业务编号',
 };
 const RESULT_LABEL = { SUCCESS: '成功', FAILURE: '失败' };
@@ -393,7 +393,7 @@ const OPERATIONS = {
         { n: 'result', label: '结果', type: 'select', options: [{ value: '', label: '全部' }, { value: 'SUCCESS', label: '成功' }, { value: 'FAILURE', label: '失败' }] },
         { n: 'start', label: '起始日期', type: 'date' }, { n: 'end', label: '结束日期', type: 'date' },
       ],
-      result: d => d.logs.length ? tbl(d.logs, [{ k: 'created_at', label: '时间' }, { k: 'operator', label: '操作人' }, { k: 'action', label: '操作', fmt: actionLabel }, { k: 'object_type', label: '对象', fmt: objectLabel }, { k: 'object_id', label: '对象编号' }, { k: 'result', label: '结果', fmt: resultLabel }, { k: 'detail', label: '详情/原因', fmt: v => !v ? '' : (typeof v === 'object' ? (v.reason || Object.entries(v).map(([k, val]) => `${k}=${val}`).join('，')) : v) }]) : `<p class="hint">${d.hint || '无记录'}</p>`,
+      result: d => d.logs.length ? tbl(d.logs, [{ k: 'created_at', label: '时间' }, { k: 'operator', label: '操作人' }, { k: 'action', label: '操作', fmt: actionLabel }, { k: 'object_type', label: '对象', fmt: objectLabel }, { k: 'object_id', label: '对象编号' }, { k: 'result', label: '结果', fmt: resultLabel }, { k: 'detail', label: '详情/原因', fmt: v => !v ? '' : (typeof v === 'object' ? (v.reason || Object.entries(v).map(([k, val]) => `${k}=${val && typeof val === 'object' ? JSON.stringify(val) : val}`).join('，')) : v) }]) : `<p class="hint">${d.hint || '无记录'}</p>`,
     },
     {
       code: 'UC-504', name: '数据备份(下载)', method: 'GET', path: '/api/admin/backup', type: 'download',
