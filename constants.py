@@ -96,8 +96,14 @@ PARAM_FX = {
     "USD": ("FX_USD_BUY", "FX_USD_SELL"),
     "EUR": ("FX_EUR_BUY", "FX_EUR_SELL"),
     "JPY": ("FX_JPY_BUY", "FX_JPY_SELL"),
+    "GBP": ("FX_GBP_BUY", "FX_GBP_SELL"),
+    "HKD": ("FX_HKD_BUY", "FX_HKD_SELL"),
+    "AUD": ("FX_AUD_BUY", "FX_AUD_SELL"),
+    "CAD": ("FX_CAD_BUY", "FX_CAD_SELL"),
+    "CHF": ("FX_CHF_BUY", "FX_CHF_SELL"),
+    "SGD": ("FX_SGD_BUY", "FX_SGD_SELL"),
 }
-SUPPORTED_CURRENCIES = ["USD", "EUR", "JPY"]
+SUPPORTED_CURRENCIES = ["USD", "EUR", "JPY", "GBP", "HKD", "AUD", "CAD", "CHF", "SGD"]
 
 P_LOAN_RATE = "LOAN_RATE"                       # 贷款年利率
 P_LOAN_OVERDUE_RATE = "LOAN_OVERDUE_RATE"       # 逾期罚息日利率
