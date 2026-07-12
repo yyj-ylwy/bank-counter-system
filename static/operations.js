@@ -54,8 +54,8 @@ const PARAM_NAME = {
   FX_JPY_BUY: '日元买入价', FX_JPY_SELL: '日元卖出价',
   LOAN_RATE: '贷款默认年利率', LOAN_OVERDUE_RATE: '逾期日罚息率',
   WITHDRAW_DAILY_LIMIT: '单日取款上限', TRANSFER_FEE_RATE: '转账手续费率',
-  CC_LIMIT_MAX: '信用卡最高授信额度', CC_MIN_REPAY_RATE: '信用卡最低还款比例',
-  CC_CASH_FEE_RATE: '预借现金手续费率', CC_CASH_DAILY_LIMIT: '预借现金单日上限',
+  CC_CREDIT_LIMIT_MAX: '信用卡最高授信额度', CC_MIN_REPAY_RATE: '信用卡最低还款比例',
+  CC_CASH_ADVANCE_FEE_RATE: '预借现金手续费率', CC_CASH_DAILY_LIMIT: '预借现金单日上限',
 };
 const PARAM_OPTIONS = Object.entries(PARAM_NAME).map(([value, label]) => ({ value, label }));
 const paramTypeLabel = t => PARAM_TYPE_LABEL[t] || t || '其他';
@@ -89,7 +89,7 @@ const OPERATIONS = {
         { n: 'name', label: '客户姓名', required: true },
         { n: 'id_type', label: '证件类型', type: 'select', options: ID_TYPES },
         { n: 'id_no', label: '证件号', required: true },
-        { n: 'phone', label: '手机号' },
+        { n: 'phone', label: '手机号', pattern: '1[3-9]\\d{9}', patternMsg: '手机号应为 11 位大陆手机号' },
         { n: 'initial_balance', label: '初始存款', type: 'number', hint: '可留空，默认0' },
       ],
       result: d => kv({ '客户号': d.customer.customer_no, '姓名': d.customer.name, '账号': d.account.account_no, '卡号': d.account.card_no, '余额': money(d.account.balance) }),
@@ -142,7 +142,7 @@ const OPERATIONS = {
       code: 'UC-108', name: '客户信息更新', method: 'POST', path: '/api/savings/update-customer',
       fields: [
         { n: 'customer_no', label: '客户号' }, { n: 'id_no', label: '证件号', required: true, hint: '用于身份核验' },
-        { n: 'phone', label: '新手机号' }, { n: 'address', label: '新联系地址' }, { n: 'occupation', label: '职业' },
+        { n: 'phone', label: '新手机号', pattern: '1[3-9]\\d{9}', patternMsg: '手机号应为 11 位大陆手机号' }, { n: 'address', label: '新联系地址' }, { n: 'occupation', label: '职业' },
         { n: 'name', label: '变更姓名（重要信息）', hint: '修改姓名/证件号须勾选下方“二次确认”' }, { n: 'new_id_no', label: '变更证件号（重要信息）' },
         { n: 'confirm', label: '二次确认关键信息变更', type: 'checkbox' }, { n: 'reason', label: '变更原因' },
       ],

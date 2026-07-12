@@ -138,7 +138,8 @@ function renderField(f) {
   } else {
     const t = f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : f.type === 'password' ? 'password' : 'text';
     const step = f.type === 'number' ? ' step="0.01"' : '';
-    input = `<input type="${t}" id="${id}"${step} autocomplete="off">`;
+    const maxlen = (t === 'text' || t === 'password') ? ` maxlength="${f.max || 64}"` : '';
+    input = `<input type="${t}" id="${id}"${step}${maxlen} autocomplete="off">`;
   }
   const req = f.required ? '<span class="req">*</span>' : '';
   return `<div class="field ${f.type === 'checkbox' || f.type === 'checkboxVal' ? 'inline' : ''}">
@@ -156,7 +157,11 @@ function gather(op) {
     if (f.type === 'checkboxVal') { if (el.checked) out[f.n] = f.value; continue; }
     const v = el.value.trim();
     if (f.required && v === '') { throw new Error(`请填写「${f.label}」`); }
-    if (v !== '') out[f.n] = v;
+    if (v !== '') {
+      if (f.pattern && !new RegExp('^(?:' + f.pattern + ')$').test(v))
+        throw new Error(f.patternMsg || `「${f.label}」格式不正确`);
+      out[f.n] = v;
+    }
   }
   return out;
 }

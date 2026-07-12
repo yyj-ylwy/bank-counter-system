@@ -1,6 +1,7 @@
 """公共工具 + 4 个 include 公共用例（UC-INC-1 身份核验、UC-INC-2 账户校验、
 UC-INC-3 流水登记、UC-INC-4 审计日志）。所有子系统复用这里的逻辑，避免重复。
 """
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -93,17 +94,35 @@ def oid(v):
 
 
 # ============ UC-INC-1 身份核验 ============
+def norm_id(s):
+    """证件号归一化：去首尾空格 + 转大写（身份证尾号 x→X）。存/查一律用它，避免大小写不一致匹配失败。"""
+    return (s or "").strip().upper()
+
+
 def validate_id_no(id_type, id_no):
-    """校验证件号格式（简化）。返回 (ok, reason)。"""
-    if not id_no or not str(id_no).strip():
-        return False, "证件号不能为空"
-    s = str(id_no).strip()
+    """校验证件号格式（简化）。返回 (ok, reason, 规范化后的证件号)。"""
+    s = norm_id(id_no)
+    if not s:
+        return False, "证件号不能为空", ""
+    if id_type not in C.ID_TYPES:  # 证件类型必须在受支持集合内
+        return False, "不支持的证件类型", ""
     if id_type == "身份证":
-        if len(s) != 18 or not (s[:17].isdigit() and (s[17].isdigit() or s[17] in "Xx")):
-            return False, "身份证号格式非法（应为 18 位）"
+        # 18 位：前 17 位为半角数字（isascii 排除全角数字），末位数字或 X
+        if len(s) != 18 or not (s[:17].isdigit() and s[:17].isascii() and (s[17].isdigit() or s[17] == "X")):
+            return False, "身份证号格式非法（应为 18 位数字，末位可为 X）", ""
     elif len(s) < 5 or len(s) > 30:
-        return False, "证件号格式非法"
-    return True, ""
+        return False, "证件号格式非法", ""
+    return True, "", s
+
+
+def validate_phone(phone):
+    """校验手机号。留空放行（选填）；非空须为 11 位大陆手机号。返回 (ok, reason, 规范化值)。"""
+    p = (phone or "").strip()
+    if p == "":
+        return True, "", ""
+    if not re.fullmatch(r"1[3-9]\d{9}", p):
+        return False, "手机号格式非法（应为 11 位大陆手机号）", ""
+    return True, "", p
 
 
 def find_customer(db, *, customer_no=None, id_no=None, phone=None, customer_id=None):
@@ -114,7 +133,7 @@ def find_customer(db, *, customer_no=None, id_no=None, phone=None, customer_id=N
     if customer_no:
         return db.customer.find_one({"customer_no": customer_no.strip()})
     if id_no:
-        return db.customer.find_one({"id_no": id_no.strip()})
+        return db.customer.find_one({"id_no": norm_id(id_no)})  # 归一化后匹配，避免尾号 X 大小写不一致
     if phone:
         return db.customer.find_one({"phone": phone.strip()})
     return None

@@ -99,6 +99,8 @@ def rate():
     db = get_db()
     if currency not in C.PARAM_FX:
         return fail("E-CUR", "不支持的币种", 400)
+    if direction not in ("BUY", "SELL"):  # 方向非法不再静默按卖出处理
+        return fail("E-DIR", "交易方向非法（买入/卖出）", 400)
     buy_key, sell_key = C.PARAM_FX[currency]
     buy = get_param(db, buy_key)
     sell = get_param(db, sell_key)

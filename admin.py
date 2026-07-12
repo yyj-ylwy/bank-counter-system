@@ -1,5 +1,6 @@
 """系统管理子系统 UC-501 ~ UC-504（参与者：系统管理员）。"""
 import hashlib
+import math
 
 from flask import Blueprint, request, g, Response
 from bson import json_util
@@ -58,6 +59,10 @@ def create_user():
     pw = d.get("password") or ""
     if not emp or not name or not pw:
         return fail("E-REQ", "工号、姓名、密码为必填", 400)
+    if len(emp) > 32 or len(name) > 64:  # 长度上限，防超长脏输入
+        return fail("E-REQ", "工号或姓名过长", 400)
+    if len(pw) < 6:  # 弱口令拦截
+        return fail("E-REQ", "密码至少 6 位", 400)
     if role not in C.ALL_ROLES:  # E-2 角色不存在
         return fail("E-2", "角色不存在")
     db = get_db()
@@ -131,19 +136,22 @@ def upsert_param():
     ptype = (d.get("param_type") or "OTHER").strip()
     if not key or value == "":
         return fail("E-REQ", "参数键和参数值为必填", 400)
-    # E-1 非法值（利率/限额/汇率必须为非负数）：以库中已存类型为权威，并对已知数字型参数键强制校验，
-    # 避免通过篡改 param_type 绕过非负校验
+    if key not in C.ALLOWED_PARAM_KEYS:  # E-1 只允许维护系统内置参数，杜绝写入无人读取的孤儿键
+        return fail("E-1", "未知参数键，只能维护系统内置参数", 400)
+    # 白名单内均为数字型参数：校验有限、非负；比例/费率额外限制 <=1（防最低还款>账单、手续费>本金等）
+    try:
+        x = float(value)
+    except ValueError:
+        return fail("E-1", "参数值必须是数字")
+    if not math.isfinite(x):  # 拦截 nan/inf，避免污染下游金额运算
+        return fail("E-1", "参数值必须是有限数字")
+    if x < 0:
+        return fail("E-1", "该参数不能为负数")
+    if key in C.RATE_PARAM_KEYS and x > 1:
+        return fail("E-1", "比例/费率应为 0~1 之间的小数")
     db = get_db()
     existing = db.system_param.find_one({"param_key": key})
     eff_type = existing["param_type"] if existing else ptype
-    NUMERIC_KEYS = {C.P_LOAN_RATE, C.P_LOAN_OVERDUE_RATE, C.P_WITHDRAW_DAILY_LIMIT, C.P_TRANSFER_FEE_RATE,
-                    C.P_CC_LIMIT_MAX, C.P_CC_MIN_REPAY_RATE, C.P_CC_CASH_FEE_RATE, C.P_CC_CASH_DAILY_LIMIT}
-    if eff_type in ("RATE", "LIMIT", "FX_RATE") or key.startswith("FX_") or key in NUMERIC_KEYS:
-        try:
-            if float(value) < 0:
-                return fail("E-1", "该参数不能为负数")
-        except ValueError:
-            return fail("E-1", "参数值必须是数字")
     db.system_param.update_one(
         {"param_key": key},
         {"$set": {"param_type": eff_type, "param_value": value,  # 已存在的参数保留原类型，避免被前端覆盖成 OTHER

@@ -7,7 +7,7 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, dec, m, oid, now,
-    validate_id_no, find_customer, check_account, write_txn, write_audit,
+    validate_id_no, validate_phone, norm_id, find_customer, check_account, write_txn, write_audit,
     get_param_dec, customer_view, account_view, txn_view, parse_date_range,
     new_customer_no, new_account_no, new_debit_card_no,
 )
@@ -27,15 +27,18 @@ def open_account():
     d = _body()
     name = (d.get("name") or "").strip()
     id_type = (d.get("id_type") or "身份证").strip()
-    id_no = (d.get("id_no") or "").strip()
+    id_no = norm_id(d.get("id_no"))
     phone = (d.get("phone") or "").strip()
     init = D(d.get("initial_balance") or 0)
 
     if not name or not id_no:
         return fail("E-REQ", "姓名和证件号为必填项", 400)
-    valid, reason = validate_id_no(id_type, id_no)
+    valid, reason, id_no = validate_id_no(id_type, id_no)  # id_no 归一化（尾号 X 大写、去空格）
     if not valid:  # E-2 证件号格式非法/过期
         return fail("E-2", reason)
+    pok, preason, phone = validate_phone(phone)  # 手机号校验（选填，非空须合法）
+    if not pok:
+        return fail("E-PHONE", preason, 400)
     if init < 0:
         return fail("E-AMT", "初始存款金额不能为负", 400)
 
@@ -162,6 +165,8 @@ def transfer():
     to_bank = (d.get("to_bank") or "").strip()
     amount = D(d.get("amount") or 0)
 
+    if ttype not in ("INTRA", "INTER"):  # 转账类型必须合法，避免非法值被静默当跨行
+        return fail("E-OP", "转账类型非法（本行/跨行）", 400)
     if amount <= 0:
         return fail("E-AMT", "转账金额必须大于零", 400)
     if ttype == "INTRA" and from_no == to_no:  # E-3 同一账户
@@ -229,7 +234,7 @@ def transfer():
 def query():
     account_no = (request.args.get("account_no") or "").strip()
     customer_no = (request.args.get("customer_no") or "").strip()
-    id_no = (request.args.get("id_no") or "").strip()
+    id_no = norm_id(request.args.get("id_no"))
     start = request.args.get("start")
     end = request.args.get("end")
 
@@ -281,7 +286,7 @@ def query():
 def card_op():
     d = _body()
     account_no = (d.get("account_no") or "").strip()
-    id_no = (d.get("id_no") or "").strip()
+    id_no = norm_id(d.get("id_no"))
     op = (d.get("op") or "").strip().upper()  # LOSS 挂失 / UNLOSS 解挂 / REISSUE 补卡
 
     db = get_db()
@@ -328,7 +333,7 @@ def card_op():
 def close_account():
     d = _body()
     account_no = (d.get("account_no") or "").strip()
-    id_no = (d.get("id_no") or "").strip()
+    id_no = norm_id(d.get("id_no"))
 
     db = get_db()
     acc = db.account.find_one({"account_no": account_no})
@@ -393,7 +398,7 @@ def close_account():
 def update_customer():
     d = _body()
     key = (d.get("customer_no") or d.get("id_no") or d.get("phone") or "").strip()
-    id_no = (d.get("id_no") or "").strip()
+    id_no = norm_id(d.get("id_no"))
     db = get_db()
 
     cust = find_customer(db, customer_no=(d.get("customer_no") or "").strip() or None,
@@ -409,8 +414,11 @@ def update_customer():
         if f in d and d[f] is not None:
             updates[f] = str(d[f]).strip()
             old[f] = cust.get(f)
-    if "phone" in updates and updates["phone"] and not updates["phone"].isdigit():  # E-3 格式
-        return fail("E-3", "手机号格式不合法")
+    if "phone" in updates:  # E-3 手机号格式（与开户同一套规则）
+        pok, preason, normalized = validate_phone(updates["phone"])
+        if not pok:
+            return fail("E-3", preason)
+        updates["phone"] = normalized
 
     # E-4 关键信息（姓名/证件号）变更需二次确认
     for f in ("name", "new_id_no"):
@@ -420,7 +428,7 @@ def update_customer():
             target = "name" if f == "name" else "id_no"
             new_val = str(d[f]).strip()
             if target == "id_no":
-                valid, reason = validate_id_no(cust.get("id_type", "身份证"), new_val)
+                valid, reason, new_val = validate_id_no(cust.get("id_type", "身份证"), new_val)  # 归一化
                 if not valid:
                     return fail("E-3", reason)
                 if db.customer.find_one({"id_no": new_val, "_id": {"$ne": cust["_id"]}}):

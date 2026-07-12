@@ -4,7 +4,7 @@
 """
 from datetime import datetime
 
-from common import D, dec, D6, validate_id_no
+from common import D, dec, D6, validate_id_no, validate_phone, norm_id
 from loan import add_months
 import constants as C
 
@@ -23,6 +23,22 @@ def test_validate_id():
     assert validate_id_no("身份证", "123")[0] is False          # 长度不足
     assert validate_id_no("身份证", "")[0] is False             # 空
     assert validate_id_no("护照", "E12345678")[0] is True
+    assert validate_id_no("不存在的类型", "110101199001011234")[0] is False  # 证件类型非法
+    assert validate_id_no("身份证", "１10101199001011234")[0] is False       # 全角数字被拒(isascii)
+
+
+def test_id_normalize():
+    # 尾号小写 x、首尾空格都要归一化成大写、去空格，避免存/查不一致
+    assert validate_id_no("身份证", " 11010119900101123x ")[2] == "11010119900101123X"
+    assert norm_id(" 11010119900101123x ") == "11010119900101123X"
+
+
+def test_validate_phone():
+    assert validate_phone("13800000001")[0] is True
+    assert validate_phone("")[0] is True            # 选填，空放行
+    assert validate_phone("12345")[0] is False      # 位数不足
+    assert validate_phone("28800000001")[0] is False  # 非 1 开头
+    assert validate_phone("1380000000a")[0] is False  # 含字母
 
 
 def test_add_months():

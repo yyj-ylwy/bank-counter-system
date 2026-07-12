@@ -70,8 +70,12 @@ def apply():
     amount = D(d.get("amount") or 0)
     term = int(d.get("term_months") or 0)
     account_no = (d.get("account_no") or "").strip()
-    if not loan_type or amount <= 0 or term <= 0:  # E-2 必填缺失
-        return fail("E-2", "贷款类型、金额、期限为必填且需合法")
+    if loan_type not in C.LOAN_TYPES:  # E-2 类型非法
+        return fail("E-2", "贷款类型非法")
+    if amount <= 0 or amount > C.LOAN_AMOUNT_MAX:  # E-2 金额范围
+        return fail("E-2", f"申请金额须大于 0 且不超过 {C.LOAN_AMOUNT_MAX:,}")
+    if term <= 0 or term > C.LOAN_TERM_MAX:  # E-2 期限范围（防到期日计算溢出）
+        return fail("E-2", f"期限须为 1~{C.LOAN_TERM_MAX} 个月")
 
     # E-1 黑名单 / 严重逾期
     if cust["status"] == C.CUSTOMER_BLACKLIST:
@@ -134,8 +138,12 @@ def approve():
         rate = dec(d["interest_rate"]) if d.get("interest_rate") not in (None, "") \
             else get_param_dec(db, C.P_LOAN_RATE, "0.0435")
         term = int(d["term_months"]) if d.get("term_months") not in (None, "") else int(ln["term_months"])
-        if appr_amt <= 0 or rate < 0 or term <= 0:
-            return fail("E-VAL", "批准金额/利率/期限不合法", 400)
+        if appr_amt <= 0 or appr_amt > C.LOAN_AMOUNT_MAX:
+            return fail("E-VAL", f"批准金额须大于 0 且不超过 {C.LOAN_AMOUNT_MAX:,}", 400)
+        if rate < 0 or rate > 1:  # 年利率为小数，上限 1（100%），防误填成 4.35 这类整数
+            return fail("E-VAL", "年利率应为 0~1 之间的小数（如 0.0435 表示 4.35%）", 400)
+        if term <= 0 or term > C.LOAN_TERM_MAX:
+            return fail("E-VAL", f"期限须为 1~{C.LOAN_TERM_MAX} 个月", 400)
         updates = {"status": C.LOAN_APPROVED, "amount": m(appr_amt),
                    "interest_rate": D6_rate(rate), "term_months": term,
                    "repay_method": (d.get("repay_method") or "等额本息").strip()}
@@ -282,7 +290,7 @@ def repay():
 @clerk
 def overdue_list():
     db = get_db()
-    days = int(request.args.get("days") or 0)
+    days = max(0, int(request.args.get("days") or 0))  # 负数当作不过滤，避免过滤条件被静默忽略
     customer_no = (request.args.get("customer_no") or "").strip()
     contract_no = (request.args.get("contract_no") or "").strip()
 

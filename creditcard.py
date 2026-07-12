@@ -3,6 +3,7 @@
 额度模型：available_limit = 可用额度；已用额度 = credit_limit - available_limit。
 预借现金扣减可用额度，还款恢复可用额度。
 """
+import re
 from datetime import timedelta
 
 from flask import Blueprint, request, g
@@ -13,7 +14,7 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, dec, m, now,
-    find_customer, check_account, write_txn, write_audit, verify_owner,
+    find_customer, check_account, write_txn, write_audit, verify_owner, norm_id,
     get_param_dec, customer_view, txn_view, new_credit_card_no,
 )
 
@@ -77,6 +78,17 @@ def apply():
     if cust["status"] == C.CUSTOMER_BLACKLIST:  # E-1 严重不良记录
         return fail("E-1", "客户存在严重不良信用记录，拒绝办理")
 
+    card_type = (d.get("card_type") or "普卡").strip()
+    if card_type not in C.CARD_TYPES:  # E-OP 卡种必须合法
+        return fail("E-OP", "卡种非法", 400)
+    income = (str(d.get("monthly_income") or "")).strip()
+    if income:  # 月收入选填，填了须为非负数字
+        try:
+            if D(income) < 0:
+                return fail("E-VAL", "月收入不能为负", 400)
+        except Exception:  # noqa: BLE001
+            return fail("E-VAL", "月收入应为数字", 400)
+
     cc = {
         "card_no": new_credit_card_no(),
         "customer_id": cust["_id"],
@@ -86,9 +98,9 @@ def apply():
         "bill_day": None,
         "repay_day": None,
         "status": C.CC_PENDING,
-        "card_type": (d.get("card_type") or "普卡").strip(),
-        "occupation": (d.get("occupation") or "").strip(),
-        "monthly_income": str(d.get("monthly_income") or ""),
+        "card_type": card_type,
+        "occupation": (d.get("occupation") or "").strip()[:C.TEXT_MAX],
+        "monthly_income": income,
         "created_at": now(),
     }
     cc["_id"] = db.credit_card.insert_one(cc).inserted_id
@@ -151,6 +163,8 @@ def generate_bill():
         return fail("E-STATE", "该卡未激活，无法生成账单")
 
     cycle = (d.get("bill_cycle") or now().strftime("%Y%m")).strip()
+    if not re.fullmatch(r"20\d{4}", cycle) or not (1 <= int(cycle[4:]) <= 12):  # 账期须为 YYYYMM，否则打乱账单排序
+        return fail("E-CYCLE", "账期格式应为 YYYYMM（月份 01-12），如 202607", 400)
     if db.credit_card_bill.find_one({"credit_card_id": cc["_id"], "bill_cycle": cycle}):
         return fail("E-DUP", f"账期 {cycle} 的账单已存在")
     min_rate = get_param_dec(db, C.P_CC_MIN_REPAY_RATE, "0.10")
@@ -196,6 +210,8 @@ def repay():
     card_no = (d.get("card_no") or "").strip()
     account_no = (d.get("account_no") or "").strip()
     repay_type = (d.get("repay_type") or "PARTIAL").strip().upper()  # FULL/MIN/PARTIAL
+    if repay_type not in ("FULL", "MIN", "PARTIAL"):  # 拼错不再静默当部分还款
+        return fail("E-OP", "还款方式非法（全额/最低/部分）", 400)
     db = get_db()
     cc = db.credit_card.find_one({"card_no": card_no})
     if not cc:
@@ -277,7 +293,7 @@ def _today_cash(db, cc_id, session=None):
 def cash_advance():
     d = _body()
     card_no = (d.get("card_no") or "").strip()
-    id_no = (d.get("id_no") or "").strip()
+    id_no = norm_id(d.get("id_no"))
     amount = D(d.get("amount") or 0)
     payout_account = (d.get("payout_account") or "").strip()  # 空=现金，否则转入该储蓄账户
     if amount <= 0:
@@ -348,7 +364,7 @@ def cash_advance():
 def card_op():
     d = _body()
     card_no = (d.get("card_no") or "").strip()
-    id_no = (d.get("id_no") or "").strip()
+    id_no = norm_id(d.get("id_no"))
     op = (d.get("op") or "").strip().upper()  # LOSS/REISSUE/FREEZE/UNFREEZE/EXCEPTION
     db = get_db()
     cc = db.credit_card.find_one({"card_no": card_no})

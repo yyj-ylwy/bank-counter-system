@@ -111,6 +111,22 @@ P_CC_CASH_DAILY_LIMIT = "CC_CASH_DAILY_LIMIT"   # 预借现金单日限额
 # 证件类型
 ID_TYPES = ["身份证", "护照", "港澳通行证", "军官证"]
 
+# ---- 输入校验用的枚举白名单与上限 ----
+LOAN_TYPES = ["个人消费贷", "住房贷款", "经营贷款", "汽车贷款"]
+CARD_TYPES = ["普卡", "金卡", "白金卡"]
+LOAN_AMOUNT_MAX = 100_000_000   # 单笔贷款金额上限（1 亿），防误输天文数字
+LOAN_TERM_MAX = 360             # 贷款期限上限（月），防到期日计算溢出
+TEXT_MAX = 200                  # 备注/原因等自由文本长度上限
+# 合法系统参数键白名单（= seed 落库的键集），维护参数只允许改这些，杜绝写入孤儿键
+ALLOWED_PARAM_KEYS = (
+    {k for pair in PARAM_FX.values() for k in pair}
+    | {P_LOAN_RATE, P_LOAN_OVERDUE_RATE, P_WITHDRAW_DAILY_LIMIT, P_TRANSFER_FEE_RATE,
+       P_CC_LIMIT_MAX, P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_CC_CASH_DAILY_LIMIT}
+)
+# 属于"比例/费率"的参数键（业务上应落在 0~1），维护时额外做上限校验
+RATE_PARAM_KEYS = {P_LOAN_RATE, P_LOAN_OVERDUE_RATE, P_TRANSFER_FEE_RATE,
+                   P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE}
+
 # ---- 状态/类型的中文标签（前端展示用）----
 ACCOUNT_STATUS_LABEL = {1: "正常", 2: "挂失", 3: "冻结", 4: "销户"}
 CARD_STATUS_LABEL = {1: "正常", 2: "挂失", 3: "失效"}
