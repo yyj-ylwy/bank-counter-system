@@ -193,7 +193,7 @@ const OPERATIONS = {
     {
       code: 'UC-204', name: '还款登记', method: 'POST', path: '/api/loan/repay',
       fields: [{ n: 'contract_no', label: '合同号', required: true }, { n: 'amount', label: '还款金额', type: 'number', required: true }, { n: 'account_no', label: '还款账号', hint: '留空取合同账户' }, { n: 'id_no', label: '证件号', required: true, hint: '核验扣款账户持有人身份' }],
-      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余应还': money(d.loan.balance) }),
+      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余本金': money(d.loan.balance), '应收罚息': money(d.loan.penalty_due) }),
     },
     {
       code: 'UC-205', name: '逾期查询', method: 'GET', path: '/api/loan/overdue',

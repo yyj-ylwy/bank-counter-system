@@ -226,12 +226,25 @@ def t_loan():
     ok("204 全额结清成功 [边界]", OK(api("POST", "/api/loan/repay", L, json={"contract_no": ln, "amount": "40000", "account_no": base["account_no"], "id_no": base["id_no"]})))
     ok("204 已结清再还→E-2 [判定]", E(api("POST", "/api/loan/repay", L, json={"contract_no": ln, "amount": "1", "account_no": base["account_no"]})) == "E-2")
 
-    # UC-205 逾期查询 + 205b 催收
+    # 跨客户账户被拒（critical 修复）：用他人账户申请贷款 → E-NOACC
+    other_c = open_acct()
+    ok("201 指定他人账户→E-NOACC [安全]", E(api("POST", "/api/loan/apply", L, json={"customer_no": cno, "loan_type": "个人消费贷", "amount": "1000", "term_months": "12", "account_no": other_c["account_no"]})) == "E-NOACC")
+
+    # UC-205 逾期查询 + 205b 催收（罚息 = 本金50000 × 日率0.0005 × 逾期40天 = 1000）
     lo = new_loan(); api("POST", "/api/loan/approve", L, json={"contract_no": lo, "decision": "APPROVED", "interest_rate": "0.05"})
     api("POST", "/api/loan/disburse", L, json={"contract_no": lo})
-    db.loan.update_one({"contract_no": lo}, {"$set": {"due_date": now() - timedelta(days=40)}})  # 造逾期
+    past = now() - timedelta(days=40)
+    db.loan.update_one({"contract_no": lo}, {"$set": {"due_date": past, "penalty_asof": past}})  # 造逾期
     r = api("GET", "/api/loan/overdue", L, query={})
-    ok("205 逾期列表含罚息 [正常流]", OK(r) and any(x["contract_no"] == lo for x in r["data"]["loans"]))
+    lorow = next((x for x in r["data"]["loans"] if x["contract_no"] == lo), None) if OK(r) else None
+    ok("205 逾期列表含罚息 [正常流]", lorow is not None)
+    ok("205 罚息按增量模型算对(=1000) [金额]", lorow and abs(lorow["penalty"] - 1000.0) < 0.01)
+    # 逾期部分还款先冲罚息，剩余罚息净额不重复计提
+    api("POST", "/api/savings/deposit", S, json={"account_no": base["account_no"], "amount": "5000"})
+    ok("204 逾期部分还款(冲罚息)成功 [组合]", OK(api("POST", "/api/loan/repay", L, json={"contract_no": lo, "amount": "500", "account_no": base["account_no"], "id_no": base["id_no"]})))
+    r2 = api("GET", "/api/loan/overdue", L, query={"contract_no": lo})
+    lorow2 = next((x for x in r2["data"]["loans"] if x["contract_no"] == lo), None) if OK(r2) else None
+    ok("204 罚息净额=剩余500(不重复计提) [金额]", lorow2 and abs(lorow2["penalty"] - 500.0) < 0.01)
     ok("205 高天数过滤跳过 [边界]", OK(api("GET", "/api/loan/overdue", L, query={"days": "9999"})))
     ok("205b 合同不存在→E-NOLOAN [判定]", E(api("POST", "/api/loan/overdue", L, json={"contract_no": "X"})) == "E-NOLOAN")
     ok("205b 催收并置逾期 [组合]", OK(api("POST", "/api/loan/overdue", L, json={"contract_no": lo, "method": "电话", "note": "承诺还款"})))
@@ -276,6 +289,9 @@ def t_forex():
     set_acct(cust["account_no"], status=C.ACCOUNT_NORMAL)
     db.fx_account.update_one({"fx_account_no": fxno}, {"$set": {"status": C.FX_FROZEN}})
     ok("303 子户冻结→E-FXSTAT [判定]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": fxno, "id_no": fid, "direction": "BUY", "amount": "1"})) == "E-FXSTAT")
+    db.fx_account.update_one({"fx_account_no": fxno}, {"$set": {"status": C.FX_NORMAL}})
+    jpy = api("POST", "/api/forex/open-subaccount", FX, json={"customer_no": cno, "currency": "JPY"})["data"]["fx_account"]["fx_account_no"]
+    ok("303 小额JPY折本币不足1分→E-AMT [边界]", E(api("POST", "/api/forex/trade", FX, json={"fx_account_no": jpy, "id_no": fid, "direction": "BUY", "amount": "0.01"})) == "E-AMT")
     db.fx_account.update_one({"fx_account_no": fxno}, {"$set": {"status": C.FX_NORMAL}})
 
     # UC-304 变更
@@ -343,7 +359,9 @@ def t_creditcard():
     # UC-404 还款（有未还账单）
     ok("404 还款方式非法→E-OP [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "XX"})) == "E-OP")
     ok("404 部分金额0→E-AMT [边界]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "PARTIAL", "amount": "0"})) == "E-AMT")
-    ok("404 部分<最低→E-2 [组合]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "PARTIAL", "amount": "1"})) == "E-2")
+    ok("404 首笔部分<最低→E-2 [组合]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "PARTIAL", "amount": "1"})) == "E-2")
+    ok("404 首笔部分(≥最低)成功 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "PARTIAL", "amount": "200"})))
+    ok("404 已部分后补小额(<最低)放行 [组合]", OK(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "PARTIAL", "amount": "50"})))
     ok("404 全额还款成功 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "FULL"})))
     ok("404 无待还账单→E-3 [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "FULL"})) == "E-3")
 
@@ -355,6 +373,15 @@ def t_creditcard():
     ok("406 冻结成功 [判定]", OK(api("POST", "/api/creditcard/card", CCK, json={"card_no": card, "id_no": cust["id_no"], "op": "FREEZE"})))
     ok("406 冻结态挂失成功 [条件]", OK(api("POST", "/api/creditcard/card", CCK, json={"card_no": card, "id_no": cust["id_no"], "op": "LOSS"})))
     ok("406 补卡成功换新卡号 [正常流]", OK(api("POST", "/api/creditcard/card", CCK, json={"card_no": card, "id_no": cust["id_no"], "op": "REISSUE"})))
+
+    # REISSUE 从冻结态补卡应保持冻结（不绕过风控）
+    fz = api("POST", "/api/creditcard/apply", CCK, json={"customer_no": cno, "card_type": "普卡"})["data"]["credit_card"]["card_no"]
+    api("POST", "/api/creditcard/approve", CCK, json={"card_no": fz, "decision": "APPROVED", "credit_limit": "10000", "bill_day": "5", "repay_day": "20"})
+    api("POST", "/api/creditcard/card", CCK, json={"card_no": fz, "id_no": cust["id_no"], "op": "FREEZE"})
+    rr = api("POST", "/api/creditcard/card", CCK, json={"card_no": fz, "id_no": cust["id_no"], "op": "REISSUE"})
+    newcard = rr.get("data", {}).get("card_no")
+    fzq = api("GET", "/api/creditcard/query", CCK, query={"card_no": newcard})
+    ok("406 冻结卡补卡后仍冻结 [状态机]", OK(fzq) and fzq["data"]["cards"][0]["status"] == "FROZEN")
 
     # UC-4Q 查询
     ok("4Q 按客户查到 [条件]", OK(api("GET", "/api/creditcard/query", CCK, query={"customer_no": cno})))

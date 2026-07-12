@@ -61,10 +61,11 @@ def bill_view(b):
     }
 
 
-def _latest_unpaid_bill(db, cc_id, session=None):
+def _oldest_unpaid_bill(db, cc_id, session=None):
+    # 最早未清账单优先还款，避免只还最新账单导致旧欠款永远还不上、销户被卡死
     return db.credit_card_bill.find_one(
         {"credit_card_id": cc_id, "status": {"$in": [C.BILL_UNPAID, C.BILL_PARTIAL]}},
-        sort=[("bill_cycle", -1)], session=session)
+        sort=[("bill_cycle", 1)], session=session)
 
 
 # ---------- UC-401 信用卡申请办理 ----------
@@ -183,10 +184,15 @@ def generate_bill():
         details = [{"txn_no": t["txn_no"], "type": C.TXN_TYPE_LABEL.get(t["business_type"]),
                     "amount": float(dec(t["amount"])),
                     "time": t["txn_time"].strftime("%Y-%m-%d %H:%M:%S")} for t in unbilled]
+        # 到期日 = 账期次月的还款日(repay_day)号，与审批录入的还款日一致，不随出账时间漂移
+        cy, cm = int(cycle[:4]), int(cycle[4:])
+        dm, dy = (cm % 12) + 1, cy + (1 if cm == 12 else 0)
+        rday = min(int(cc.get("repay_day") or 25), 28)
+        due = now().replace(year=dy, month=dm, day=rday, hour=0, minute=0, second=0, microsecond=0)
         bill = {
             "credit_card_id": cc["_id"], "bill_cycle": cycle,
             "total_amount": m(total), "paid_amount": m(0), "min_repay": m(D(total * min_rate)),
-            "due_date": (now() + timedelta(days=25)),
+            "due_date": due,
             "status": C.BILL_PAID if total == 0 else C.BILL_UNPAID,
             "txn_details": details, "repay_log": [], "created_at": now(),
         }
@@ -220,7 +226,7 @@ def repay():
     cc = db.credit_card.find_one({"card_no": card_no})
     if not cc:
         return fail("E-NOCARD", "未找到信用卡")
-    bill = _latest_unpaid_bill(db, cc["_id"])
+    bill = _oldest_unpaid_bill(db, cc["_id"])  # 优先还最早未清账单
     if not bill:  # E-3 已结清
         return fail("E-3", "当前没有待还款账单，无需还款")
 
@@ -238,8 +244,9 @@ def repay():
         return fail("E-AMT", "还款金额必须大于零", 400)
     if amount > remaining:
         amount = remaining  # 不允许超过应还，自动收敛为全额
-    if repay_type == "PARTIAL" and amount < min_repay <= remaining:  # E-2 低于最低
-        return fail("E-2", f"还款金额低于最低还款额 {min_repay}")
+    # 仅在本账单尚未还过款时约束首笔不得低于最低还款额；已部分还款(累计已满足)后补小额不再拦
+    if repay_type == "PARTIAL" and dec(bill["paid_amount"]) == 0 and amount < min_repay <= remaining:
+        return fail("E-2", f"首次还款不得低于最低还款额 {min_repay}")
 
     def txn(s):
         cc2 = db.credit_card.find_one({"_id": cc["_id"]}, session=s)      # 事务内重读，读改写一致
@@ -404,15 +411,17 @@ def card_op():
         if cur not in (C.CC_LOST, C.CC_FROZEN, C.CC_ACTIVE):  # E-2 已销卡不可补
             return fail("E-2", f"当前状态「{C.CC_STATUS_LABEL.get(cur)}」不可补卡")
         new_card = new_credit_card_no()
-        # 同一账户换新卡号：额度/账单历史留在同一记录，原卡号入历史并作废
+        # 换新卡号但保留原风控状态：冻结卡补卡后仍冻结（需另行解冻），不借补卡绕过风控
+        new_status = C.CC_FROZEN if cur == C.CC_FROZEN else C.CC_ACTIVE
         db.credit_card.update_one({"_id": cc["_id"]}, {
-            "$set": {"card_no": new_card, "status": C.CC_ACTIVE},
+            "$set": {"card_no": new_card, "status": new_status},
             "$push": {"former_card_nos": {"card_no": cc["card_no"],
                                           "invalidated_at": now().strftime("%Y-%m-%d %H:%M:%S")}}})
         write_audit(db, user_id=g.user["_id"], action="CC_REISSUE", object_type="credit_card",
                     object_id=card_no, result=C.RESULT_SUCCESS,
                     detail={"old_card": cc["card_no"], "new_card": new_card})
-        return ok({"card_no": new_card}, f"补卡成功，新卡号 {new_card}（原卡号已作废）")
+        tail = "（原卡号已作废，卡仍为冻结状态）" if new_status == C.CC_FROZEN else "（原卡号已作废）"
+        return ok({"card_no": new_card}, f"补卡成功，新卡号 {new_card}{tail}")
     elif op == "EXCEPTION":
         entry = {"time": now().strftime("%Y-%m-%d %H:%M:%S"),
                  "note": (d.get("note") or "").strip(), "operator": g.user["name"]}

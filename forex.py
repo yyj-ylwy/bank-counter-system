@@ -269,6 +269,8 @@ def trade():
     if r is None:  # E-1 汇率缺失/过期
         return fail("E-1", "该币种牌价缺失，请先维护或刷新")
     cny = D(foreign * r)
+    if cny <= 0:  # 小额外币按汇率折算后本币不足 1 分，拒绝，避免 0 元换外币/换 0 元本币
+        return fail("E-AMT", "金额过小：按当前汇率折算的本币金额不足 0.01 元，请增加数量", 400)
     base = db.account.find_one({"_id": fx["base_account_id"]})
     if not base:
         return fail("E-NOACC", "关联储蓄账户不存在")

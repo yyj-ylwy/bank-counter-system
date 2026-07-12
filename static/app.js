@@ -30,7 +30,7 @@ function rmbUpper(num) {
   num = Number(num);
   if (!isFinite(num)) return '';
   const neg = num < 0; num = Math.abs(num);
-  const fen = Math.round(num * 100);
+  const fen = Math.round(Number(money(num).replace(/,/g, '')) * 100);  // 复用 money() 的取整，保证大写与显示金额恒等
   if (fen === 0) return '零元整';
   const DIG = ['零', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖'];
   const SMALL = ['', '拾', '佰', '仟'], BIG = ['', '万', '亿', '兆'];

@@ -30,6 +30,23 @@ def add_months(dt, months):
     return dt.replace(year=y, month=mth, day=day)
 
 
+def accrue_penalty(loan, raw_overdue_rate):
+    """逾期罚息增量计提：按『当前剩余本金 × 日罚息率 × 自上次计提以来的天数(按日历日)』累加到未缴罚息。
+    返回 (应收未缴罚息 Decimal, 计提截止时间)。纯计算不写库；逾期列表与还款共用同一口径，避免毛/净不一致。"""
+    principal = dec(loan["balance"])
+    penalty_due = dec(loan.get("penalty_due", 0))
+    due = loan.get("due_date")
+    asof = loan.get("penalty_asof") or due
+    today = now()
+    if due and principal > 0 and asof and raw_overdue_rate is not None and today.date() > asof.date():
+        start = asof if asof.date() >= due.date() else due
+        days = (today.date() - start.date()).days  # 日历日粒度，避免放款时分秒导致 off-by-one
+        if days > 0:
+            penalty_due += D(principal * dec(raw_overdue_rate) * days)
+            asof = today
+    return D(penalty_due), (asof or due)
+
+
 def loan_view(db, ln, with_customer=True):
     v = {
         "id": str(ln["_id"]),
@@ -37,6 +54,7 @@ def loan_view(db, ln, with_customer=True):
         "loan_type": ln.get("loan_type"),
         "amount": float(dec(ln.get("amount"))),
         "balance": float(dec(ln.get("balance"))),
+        "penalty_due": float(dec(ln.get("penalty_due", 0))),  # 应收未缴逾期罚息
         "interest_rate": float(dec(ln.get("interest_rate"))) if ln.get("interest_rate") is not None else None,
         "term_months": ln.get("term_months"),
         "status": ln["status"],
@@ -90,10 +108,12 @@ def apply():
             {"status": C.LOAN_ACTIVE, "due_date": {"$lt": now()}, "balance": {"$gt": m(0)}}]}):
         return fail("E-1", "客户存在逾期贷款，拒绝办理")
 
-    acc = db.account.find_one({"account_no": account_no}) if account_no else \
-        db.account.find_one({"customer_id": cust["_id"]})
+    if account_no:  # 指定账户必须属于本客户且状态正常，杜绝把贷款打进他人账户
+        acc = db.account.find_one({"account_no": account_no, "customer_id": cust["_id"], "status": C.ACCOUNT_NORMAL})
+    else:
+        acc = db.account.find_one({"customer_id": cust["_id"], "status": C.ACCOUNT_NORMAL})
     if not acc:
-        return fail("E-NOACC", "客户没有可用的储蓄账户（放款/还款账户）")
+        return fail("E-NOACC", "客户没有可用的正常储蓄账户，或指定账户不属于该客户")
 
     ln = {
         "contract_no": new_contract_no(),
@@ -199,10 +219,11 @@ def disburse():
         amount = dec(loan["amount"])
         db.account.update_one({"_id": acc["_id"]},
                               {"$set": {"balance": m(dec(acc["balance"]) + amount)}}, session=s)
-        due = add_months(now(), loan["term_months"])
+        due = add_months(now(), loan["term_months"]).replace(hour=0, minute=0, second=0, microsecond=0)  # 日历到期日
         db.loan.update_one({"_id": loan["_id"]},
                            {"$set": {"status": C.LOAN_ACTIVE, "balance": m(amount),
-                                     "due_date": due, "disbursed_at": now()}}, session=s)
+                                     "due_date": due, "disbursed_at": now(),
+                                     "penalty_due": m(0), "penalty_asof": due}}, session=s)
         write_txn(db, business_type=C.TXN_LOAN_DISBURSE, amount=amount, user_id=g.user["_id"],
                   customer_id=loan["customer_id"], account_id=acc["_id"], related_id=loan["_id"], session=s)
         write_audit(db, user_id=g.user["_id"], action=C.TXN_LOAN_DISBURSE, object_type="loan",
@@ -246,17 +267,13 @@ def repay():
         if loan["status"] not in (C.LOAN_ACTIVE, C.LOAN_OVERDUE):  # E-2 已结清
             return None, ("E-2", f"贷款当前为「{C.LOAN_STATUS_LABEL.get(loan['status'])}」，无需还款")
         principal = dec(loan["balance"])
-        # 应收罚息 = 剩余本金×日罚息率×逾期天数 − 已缴罚息(paid_penalty)；扣除已缴避免同一逾期段被多次部分还款重复计提
-        penalty = D(0)
         due = loan.get("due_date")
-        if due and due < now() and principal > 0:
-            if raw_overdue_rate is None:  # 逾期却缺罚息参数，明确报错而不是按 0 处理
-                return None, ("E-3", "缺少逾期罚息参数，请管理员先维护 LOAN_OVERDUE_RATE")
-            overdue_days = (now() - due).days
-            accrued = D(principal * dec(raw_overdue_rate) * overdue_days)
-            penalty = D(max(accrued - dec(loan.get("paid_penalty", 0)), D(0)))
+        if due and now().date() > due.date() and principal > 0 and raw_overdue_rate is None:
+            return None, ("E-3", "缺少逾期罚息参数，请管理员先维护 LOAN_OVERDUE_RATE")
+        # 增量计提未缴罚息（累加自上次计提以来的天数），罚息单列不并入本金
+        penalty, new_asof = accrue_penalty(loan, raw_overdue_rate)
         total_due = principal + penalty
-        if amount > total_due:  # E-3 超额（本金 + 当前应收罚息）
+        if amount > total_due:  # E-3 超额（本金 + 应收罚息）
             return None, ("E-3", f"还款金额超过应还合计 {total_due}（本金 {principal} + 罚息 {penalty}）")
         acc, err = check_account(db, repay_no, need_amount=amount, session=s)  # E-1 余额不足
         if err:
@@ -264,14 +281,14 @@ def repay():
         cust, ierr = check_identity(db, acc["customer_id"], id_no, session=s)  # 还款须核验扣款账户持有人身份
         if ierr:
             return None, ierr
-        # 罚息优先冲抵，剩余冲抵本金；只有本金还清且当期应收罚息付清才算结清
+        # 罚息优先冲抵，剩余冲抵本金；本金与应收罚息全部还清才结清
         pay_penalty = penalty if amount >= penalty else amount
         pay_principal = amount - pay_penalty
         new_loan_bal = principal - pay_principal
-        new_paid_penalty = dec(loan.get("paid_penalty", 0)) + pay_penalty  # 累计已缴罚息，持久化
+        new_penalty_due = penalty - pay_penalty
         db.account.update_one({"_id": acc["_id"]},
                               {"$set": {"balance": m(dec(acc["balance"]) - amount)}}, session=s)
-        settled = new_loan_bal <= 0 and (penalty - pay_penalty) <= 0
+        settled = new_loan_bal <= 0 and new_penalty_due <= 0
         new_status = C.LOAN_PAID_OFF if settled else loan["status"]
         # 金额一律存 Decimal128（与全系统金额不变式一致），仅在对外序列化时才转 float
         log_entry = {"time": now().strftime("%Y-%m-%d %H:%M:%S"), "amount": m(amount),
@@ -279,7 +296,7 @@ def repay():
                      "account_no": repay_no, "balance_after": m(new_loan_bal)}
         db.loan.update_one({"_id": loan["_id"]},
                            {"$set": {"balance": m(new_loan_bal), "status": new_status,
-                                     "paid_penalty": m(new_paid_penalty)},
+                                     "penalty_due": m(new_penalty_due), "penalty_asof": new_asof},
                             "$push": {"repay_log": log_entry}}, session=s)
         write_txn(db, business_type=C.TXN_LOAN_REPAY, amount=amount, user_id=g.user["_id"],
                   customer_id=loan["customer_id"], account_id=acc["_id"], related_id=loan["_id"], session=s)
@@ -323,12 +340,12 @@ def overdue_list():
     rows = []
     for ln in db.loan.find(q):
         due = ln.get("due_date")
-        if not due or due >= today:
+        if not due or today.date() <= due.date():  # 日历日粒度，与还款口径一致
             continue
-        overdue_days = (today - due).days
+        overdue_days = (today.date() - due.date()).days
         if days and overdue_days < days:
             continue
-        penalty = D(dec(ln["balance"]) * overdue_rate * overdue_days)
+        penalty, _ = accrue_penalty(ln, raw_rate)  # 与还款同一净额口径（扣已缴，避免列表多报）
         v = loan_view(db, ln)
         v["overdue_days"] = overdue_days
         v["penalty"] = float(penalty)
@@ -359,7 +376,7 @@ def overdue_record():
              "operator": g.user["name"]}
     update = {"$push": {"collection_log": entry}}  # 至少 push 催收记录，避免空 $set 报错
     due = ln.get("due_date")
-    if due and due < now() and dec(ln["balance"]) > 0:
+    if due and now().date() > due.date() and dec(ln["balance"]) > 0:  # 日历日粒度
         update["$set"] = {"status": C.LOAN_OVERDUE}
     db.loan.update_one({"_id": ln["_id"]}, update)
     write_audit(db, user_id=g.user["_id"], action="LOAN_OVERDUE", object_type="loan",
