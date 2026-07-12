@@ -38,6 +38,7 @@ def cc_view(cc, cust=None):
         "status": cc["status"],
         "status_label": C.CC_STATUS_LABEL.get(cc["status"], cc["status"]),
         "card_type": cc.get("card_type"),
+        "reject_reason": cc.get("reject_reason"),
         "customer_name": cust["name"] if cust else None,
         "customer_no": cust["customer_no"] if cust else None,
     }
@@ -145,7 +146,9 @@ def approve():
             "status": C.CC_REJECTED, "reject_reason": (d.get("reason") or "").strip()}})
         write_audit(db, user_id=g.user["_id"], action="CC_REJECT", object_type="credit_card",
                     object_id=card_no, result=C.RESULT_SUCCESS)
-        return ok(message="已拒绝该信用卡申请")
+        cc = db.credit_card.find_one({"_id": cc["_id"]})
+        return ok({"credit_card": cc_view(cc, db.customer.find_one({"_id": cc["customer_id"]}))},
+                  "已拒绝该信用卡申请")
     return fail("E-OP", "审批结论非法（APPROVED/REJECTED）", 400)
 
 
@@ -451,5 +454,8 @@ def query():
         v = cc_view(cc, cust)
         v["bills"] = [bill_view(b) for b in
                       db.credit_card_bill.find({"credit_card_id": cc["_id"]}).sort("bill_cycle", -1)]
+        # 带出持卡人名下可用储蓄账号，供 UC-404 还款 / UC-405 出款直接取用
+        v["repay_accounts"] = [a["account_no"] for a in
+                               db.account.find({"customer_id": cc["customer_id"], "status": C.ACCOUNT_NORMAL})]
         result.append(v)
     return ok({"cards": result})

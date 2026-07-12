@@ -110,3 +110,14 @@ def change_password():
     write_audit(db, user_id=u["_id"], action="CHANGE_PASSWORD", object_type="user_account",
                 object_id=u["employee_no"], result=C.RESULT_SUCCESS)
     return ok(message="密码修改成功，下次登录请使用新密码")
+
+
+@bp.get("/api/my-activity")
+@require_role()  # 任意登录用户查询本人经办记录（按 g.user 过滤审计日志）
+def my_activity():
+    db = get_db()
+    logs = list(db.audit_log.find({"user_id": g.user["_id"]}).sort("created_at", -1).limit(200))
+    rows = [{"created_at": lg["created_at"].strftime("%Y-%m-%d %H:%M:%S") if lg.get("created_at") else None,
+             "action": lg.get("action"), "object_type": lg.get("object_type"),
+             "object_id": lg.get("object_id"), "result": lg.get("result")} for lg in logs]
+    return ok({"logs": rows, "hint": None if rows else "暂无经办记录"})

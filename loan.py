@@ -42,6 +42,9 @@ def loan_view(db, ln, with_customer=True):
         "status_label": C.LOAN_STATUS_LABEL.get(ln["status"], ln["status"]),
         "purpose": ln.get("purpose"),
         "guarantee": ln.get("guarantee"),
+        "repay_method": ln.get("repay_method"),
+        "reject_reason": ln.get("reject_reason"),
+        "supplement_note": ln.get("supplement_note"),
         "due_date": ln["due_date"].strftime("%Y-%m-%d") if ln.get("due_date") else None,
         "repay_log": ln.get("repay_log") or [],
         "collection_log": ln.get("collection_log") or [],   # UC-205 催收记录，供查询/展示

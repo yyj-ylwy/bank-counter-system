@@ -62,7 +62,7 @@ function rmbUpper(num) {
 }
 // 每个用例的菜单图标（纯展示，按用例编号取；未命中用默认点）
 const ICONS = {
-  'UC-000': '🔑',
+  'UC-000': '🔑', 'UC-00A': '📄',
   'UC-101': '🆕', 'UC-102': '💰', 'UC-103': '💸', 'UC-104': '🔄', 'UC-105': '🔍', 'UC-106': '🪪', 'UC-107': '🗑️', 'UC-108': '✏️',
   'UC-201': '📋', 'UC-202': '✅', 'UC-203': '🏦', 'UC-204': '💵', 'UC-205': '⏰', 'UC-205b': '📞', 'UC-206': '📊',
   'UC-301': '🌐', 'UC-302': '💱', 'UC-303': '🔁', 'UC-304': '⚙️', 'UC-305': '🔍', 'UC-306': '📈', 'UC-307': '📌',
@@ -87,7 +87,7 @@ function submitLabel(op) {
 }
 // 涉及资金变动/不可逆的操作，提交前弹出复核确认（银行二次确认规范）
 const CONFIRM_OPS = new Set([
-  'UC-102', 'UC-103', 'UC-104', 'UC-107',        // 存/取/转账/销户
+  'UC-102', 'UC-103', 'UC-104', 'UC-106', 'UC-107',  // 存/取/转账/挂失补卡/销户
   'UC-203', 'UC-204',                            // 放款/贷款还款
   'UC-303', 'UC-304', 'UC-307',                  // 外汇买卖/账户变更/实时挂牌
   'UC-404', 'UC-405',                            // 信用卡还款/预借现金
@@ -251,8 +251,8 @@ function gather(op) {
   for (const f of op.fields) {
     const el = $('f_' + f.n);
     if (!el) continue;
-    if (f.type === 'checkbox') { out[f.n] = el.checked; continue; }
-    if (f.type === 'checkboxVal') { if (el.checked) out[f.n] = f.value; continue; }
+    if (f.type === 'checkbox') { if (f.required && !el.checked) throw new Error(`请勾选「${f.label}」`); out[f.n] = el.checked; continue; }
+    if (f.type === 'checkboxVal') { if (f.required && !el.checked) throw new Error(`请勾选「${f.label}」`); if (el.checked) out[f.n] = f.value; continue; }
     const v = el.value.trim();
     if (f.required && v === '') { throw new Error(`请填写「${f.label}」`); }
     if (v !== '') {

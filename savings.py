@@ -397,12 +397,11 @@ def close_account():
 @clerk
 def update_customer():
     d = _body()
-    key = (d.get("customer_no") or d.get("id_no") or d.get("phone") or "").strip()
     id_no = norm_id(d.get("id_no"))
     db = get_db()
 
     cust = find_customer(db, customer_no=(d.get("customer_no") or "").strip() or None,
-                         id_no=id_no or None, phone=(d.get("phone_query") or "").strip() or None)
+                         id_no=id_no or None)
     if not cust:  # E-1
         return fail("E-1", "客户不存在，请重新输入查询条件")
     if id_no and cust["id_no"] != id_no:  # E-2 身份核验失败

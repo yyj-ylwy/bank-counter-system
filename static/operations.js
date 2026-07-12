@@ -8,9 +8,6 @@ const CURRENCIES = [{ value: 'USD', label: '美元(USD)' }, { value: 'EUR', labe
 // 汇率方向类型（后端返回英文 BUY/SELL）→ 中文
 const FX_RATE_TYPE_LABEL = { BUY: '买入价', SELL: '卖出价' };
 const fxRateType = t => FX_RATE_TYPE_LABEL[t] || t;
-// 预借现金出款方式（后端英文枚举）→ 中文
-const PAYOUT_LABEL = { CASH: '现金出款', ACCOUNT: '转入储蓄账号', TRANSFER: '转入储蓄账号' };
-const payout = p => PAYOUT_LABEL[p] || p;
 // 小数利率 → 百分比显示（0.0435 → 4.35%）
 const pct = v => (v == null || v === '') ? '' : +(Number(v) * 100).toFixed(4) + '%';
 // 账期 YYYYMM → 2026年01月
@@ -37,6 +34,7 @@ const OBJECT_LABEL = {
   account: '储蓄账户', customer: '客户', loan: '贷款', fx_account: '外汇账户',
   credit_card: '信用卡', credit_card_bill: '信用卡账单', user_account: '操作员账号',
   system_param: '系统参数', database: '数据库',
+  business_transaction: '业务流水', counters: '业务编号',
 };
 const RESULT_LABEL = { SUCCESS: '成功', FAILURE: '失败' };
 const actionLabel = a => ACTION_LABEL[a] || a;
@@ -115,6 +113,7 @@ const OPERATIONS = {
         { n: 'amount', label: '转账金额', type: 'number', required: true },
       ],
       result: d => kv({ '转账方式': d.sub, '手续费': money(d.fee), '转出后余额': money(d.balance), '流水号': d.txn.txn_no }),
+      validate: v => v.transfer_type === 'INTER' && !v.to_bank ? '跨行转账请填写收款方开户银行' : null,
     },
     {
       code: 'UC-105', name: '账户/明细查询', method: 'GET', path: '/api/savings/query',
@@ -170,14 +169,20 @@ const OPERATIONS = {
       code: 'UC-202', name: '审核与审批', method: 'POST', path: '/api/loan/approve',
       fields: [
         { n: 'contract_no', label: '合同号', required: true },
-        { n: 'decision', label: '审批结论', type: 'select', options: [{ value: 'APPROVED', label: '通过' }, { value: 'REJECTED', label: '拒绝' }, { value: 'SUPPLEMENT', label: '待补件' }] },
-        { n: 'approved_amount', label: '批准金额', type: 'number' },
-        { n: 'interest_rate', label: '年利率', type: 'number', hint: '填小数，如 0.0435 表示 4.35%；留空用系统默认' },
-        { n: 'term_months', label: '期限（月）', type: 'number' },
+        { n: 'decision', label: '审批结论', type: 'select', options: [{ value: '', label: '请选择审批结论' }, { value: 'APPROVED', label: '通过' }, { value: 'REJECTED', label: '拒绝' }, { value: 'SUPPLEMENT', label: '待补件' }] },
+        { n: 'approved_amount', label: '批准金额', type: 'number', hint: '仅通过时填写' },
+        { n: 'interest_rate', label: '年利率', type: 'number', hint: '仅通过时填；小数如 0.0435=4.35%，留空用系统默认' },
+        { n: 'term_months', label: '期限（月）', type: 'number', hint: '仅通过时填' },
         { n: 'repay_method', label: '还款方式', type: 'select', options: [{ value: '', label: '默认（等额本息）' }, '等额本息', '等额本金', '先息后本', '一次性还本付息'] },
-        { n: 'reason', label: '拒绝/补件原因' },
+        { n: 'reason', label: '拒绝/补件原因', hint: '仅拒绝或待补件时填写' },
       ],
-      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '批准金额': money(d.loan.amount), '年利率': pct(d.loan.interest_rate) }),
+      result: d => {
+        const l = d.loan, base = { '合同号': l.contract_no, '状态': l.status_label };
+        if (l.status === 'APPROVED') { base['批准金额'] = money(l.amount); base['年利率'] = pct(l.interest_rate); base['还款方式'] = l.repay_method || '-'; }
+        else if (l.status === 'REJECTED') base['拒绝原因'] = l.reject_reason || '-';
+        else if (l.status === 'SUPPLEMENT') base['补件说明'] = l.supplement_note || '-';
+        return kv(base);
+      },
     },
     {
       code: 'UC-203', name: '放款处理', method: 'POST', path: '/api/loan/disburse',
@@ -207,7 +212,7 @@ const OPERATIONS = {
       code: 'UC-206', name: '贷款查询统计', method: 'GET', path: '/api/loan/query',
       fields: [
         { n: 'customer_no', label: '客户号' }, { n: 'contract_no', label: '合同号' },
-        { n: 'status', label: '状态', type: 'select', options: [{ value: '', label: '全部' }, { value: 'PENDING', label: '待审核' }, { value: 'APPROVED', label: '已批复' }, { value: 'ACTIVE', label: '存续中' }, { value: 'OVERDUE', label: '逾期' }, { value: 'PAID_OFF', label: '已结清' }] },
+        { n: 'status', label: '状态', type: 'select', options: [{ value: '', label: '全部' }, { value: 'PENDING', label: '待审核' }, { value: 'APPROVED', label: '已批复' }, { value: 'ACTIVE', label: '存续中' }, { value: 'OVERDUE', label: '逾期' }, { value: 'PAID_OFF', label: '已结清' }, { value: 'REJECTED', label: '已拒绝' }, { value: 'SUPPLEMENT', label: '待补件' }] },
         { n: 'loan_type', label: '贷款类型' }, { n: 'start', label: '起始日期', type: 'date' }, { n: 'end', label: '结束日期', type: 'date' },
       ],
       result: d => kv({ '笔数': d.stats.count, '申请总额': money(d.stats.total_amount), '剩余本金': money(d.stats.total_balance), '逾期笔数': d.stats.overdue_count, '已结清': d.stats.paid_count })
@@ -219,7 +224,7 @@ const OPERATIONS = {
   FOREX_CLERK: [
     {
       code: 'UC-301', name: '外汇账户开立', method: 'POST', path: '/api/forex/open-subaccount',
-      fields: [{ n: 'customer_no', label: '客户号' }, { n: 'id_no', label: '证件号' }, { n: 'currency', label: '外币币种', type: 'select', options: CURRENCIES }],
+      fields: [{ n: 'customer_no', label: '客户号' }, { n: 'id_no', label: '证件号', hint: '客户号/证件号任填其一' }, { n: 'currency', label: '外币币种', type: 'select', options: CURRENCIES }],
       result: d => kv({ '外汇账号': d.fx_account.fx_account_no, '币种': d.fx_account.currency, '关联储蓄账号': d.fx_account.base_account_no }),
     },
     {
@@ -267,7 +272,7 @@ const OPERATIONS = {
     {
       code: 'UC-305', name: '余额与历史查询', method: 'GET', path: '/api/forex/query',
       fields: [{ n: 'fx_account_no', label: '外汇账号' }, { n: 'customer_no', label: '客户号' }, { n: 'id_no', label: '证件号' }, { n: 'start', label: '起始日期', type: 'date' }, { n: 'end', label: '结束日期', type: 'date' }],
-      result: d => tbl(d.fx_accounts, [{ k: 'fx_account_no', label: '外汇账号' }, { k: 'currency', label: '币种' }, { k: 'balance', label: '余额', fmt: money }, { k: 'status_label', label: '状态' }])
+      result: d => tbl(d.fx_accounts, [{ k: 'fx_account_no', label: '外汇账号' }, { k: 'customer_name', label: '客户' }, { k: 'currency', label: '币种' }, { k: 'balance', label: '余额', fmt: money }, { k: 'status_label', label: '状态' }, { k: 'base_account_no', label: '关联储蓄账号' }])
         + '<h4>交易历史</h4>' + (d.history.length ? tbl(d.history, [{ k: 'txn_time', label: '时间' }, { k: 'business_label', label: '类型' }, { k: 'currency', label: '币种' }, { k: 'amount', label: '外币金额', fmt: money }, { k: 'fx_rate', label: '汇率' }, { k: 'cny_amount', label: '本币金额', fmt: money }]) : `<p class="hint">${d.hint || '无记录'}</p>`),
     },
   ],
@@ -276,17 +281,23 @@ const OPERATIONS = {
   CREDIT_CARD_CLERK: [
     {
       code: 'UC-401', name: '信用卡申请办理', method: 'POST', path: '/api/creditcard/apply',
-      fields: [{ n: 'customer_no', label: '客户号' }, { n: 'id_no', label: '证件号' }, { n: 'card_type', label: '卡片类型', type: 'select', options: ['普卡', '金卡', '白金卡'] }, { n: 'occupation', label: '职业' }, { n: 'monthly_income', label: '月收入', type: 'number' }],
+      fields: [{ n: 'customer_no', label: '客户号' }, { n: 'id_no', label: '证件号', hint: '客户号/证件号任填其一' }, { n: 'card_type', label: '卡片类型', type: 'select', options: ['普卡', '金卡', '白金卡'] }, { n: 'occupation', label: '职业' }, { n: 'monthly_income', label: '月收入', type: 'number' }],
       result: d => kv({ '卡号': d.credit_card.card_no, '状态': d.credit_card.status_label }),
     },
     {
       code: 'UC-402', name: '审核与额度设定', method: 'POST', path: '/api/creditcard/approve',
       fields: [
         { n: 'card_no', label: '信用卡号', required: true },
-        { n: 'decision', label: '审批结论', type: 'select', options: [{ value: 'APPROVED', label: '通过' }, { value: 'REJECTED', label: '拒绝' }] },
-        { n: 'credit_limit', label: '授信额度（可透支上限）', type: 'number' }, { n: 'bill_day', label: '账单日', type: 'number', hint: '每月几号出账单，填 1-28' }, { n: 'repay_day', label: '还款日', type: 'number', hint: '每月几号前还款，填 1-28' }, { n: 'reason', label: '拒绝原因' },
+        { n: 'decision', label: '审批结论', type: 'select', options: [{ value: '', label: '请选择审批结论' }, { value: 'APPROVED', label: '通过' }, { value: 'REJECTED', label: '拒绝' }] },
+        { n: 'credit_limit', label: '授信额度（可透支上限）', type: 'number', hint: '审批通过时必填' }, { n: 'bill_day', label: '账单日', type: 'number', hint: '每月几号出账单，填 1-28' }, { n: 'repay_day', label: '还款日', type: 'number', hint: '每月几号前还款，填 1-28' }, { n: 'reason', label: '拒绝原因', hint: '仅拒绝时填写' },
       ],
-      result: d => d.credit_card ? kv({ '卡号': d.credit_card.card_no, '状态': d.credit_card.status_label, '授信额度': money(d.credit_card.credit_limit), '账单日': d.credit_card.bill_day, '还款日': d.credit_card.repay_day }) : '',
+      result: d => {
+        if (!d.credit_card) return '';
+        const c = d.credit_card, base = { '卡号': c.card_no, '状态': c.status_label };
+        if (c.status === 'REJECTED') base['拒绝原因'] = c.reject_reason || '-';
+        else { base['授信额度'] = money(c.credit_limit); base['账单日'] = c.bill_day; base['还款日'] = c.repay_day; }
+        return kv(base);
+      },
     },
     {
       code: 'UC-403', name: '账单生成', method: 'POST', path: '/api/creditcard/bill',
@@ -300,12 +311,12 @@ const OPERATIONS = {
         { n: 'repay_type', label: '还款方式', type: 'select', options: [{ value: 'FULL', label: '全额还款' }, { value: 'MIN', label: '最低还款' }, { value: 'PARTIAL', label: '部分还款' }] },
         { n: 'amount', label: '还款金额(部分还款填)', type: 'number' },
       ],
-      result: d => kv({ '账期': d.bill.bill_cycle, '账单状态': d.bill.status_label, '已还': money(d.bill.paid_amount), '剩余': money(d.bill.remaining), '可用额度': money(d.credit_card.available_limit) }),
+      result: d => kv({ '账期': billCycle(d.bill.bill_cycle), '账单状态': d.bill.status_label, '已还': money(d.bill.paid_amount), '剩余': money(d.bill.remaining), '可用额度': money(d.credit_card.available_limit) }),
     },
     {
       code: 'UC-405', name: '预借现金处理', method: 'POST', path: '/api/creditcard/cash-advance',
       fields: [{ n: 'card_no', label: '信用卡号', required: true }, { n: 'id_no', label: '证件号', required: true }, { n: 'amount', label: '取现金额', type: 'number', required: true }, { n: 'payout_account', label: '转入储蓄账号', hint: '留空表示以现金支付' }],
-      result: d => kv({ '手续费': money(d.fee), '出款方式': payout(d.payout), '剩余可用额度': money(d.available_limit), '流水号': d.txn.txn_no }),
+      result: d => kv({ '手续费': money(d.fee), '出款方式': d.payout, '剩余可用额度': money(d.available_limit), '流水号': d.txn.txn_no }),
     },
     {
       code: 'UC-406', name: '挂失/补卡/异常', method: 'POST', path: '/api/creditcard/card',
@@ -319,7 +330,7 @@ const OPERATIONS = {
     {
       code: 'UC-4Q', name: '信用卡查询', method: 'GET', path: '/api/creditcard/query',
       fields: [{ n: 'card_no', label: '信用卡号' }, { n: 'customer_no', label: '客户号' }, { n: 'id_no', label: '证件号' }],
-      result: d => d.cards.map(c => kv({ '卡号': c.card_no, '状态': c.status_label, '授信额度': money(c.credit_limit), '可用额度': money(c.available_limit), '已用额度': money(c.used) })
+      result: d => d.cards.map(c => kv({ '卡号': c.card_no, '客户': c.customer_name || '-', '状态': c.status_label, '授信额度': money(c.credit_limit), '可用额度': money(c.available_limit), '已用额度': money(c.used), '可用还款/出款账号': (c.repay_accounts && c.repay_accounts.length ? c.repay_accounts.join('、') : '（该客户暂无正常储蓄账户）') })
         + (c.bills.length ? '<h4>账单</h4>' + tbl(c.bills, [{ k: 'bill_cycle', label: '账期', fmt: billCycle }, { k: 'total_amount', label: '应还', fmt: money }, { k: 'paid_amount', label: '已还', fmt: money }, { k: 'status_label', label: '状态' }]) : '')).join('<hr>'),
     },
   ],
@@ -348,6 +359,7 @@ const OPERATIONS = {
         { n: 'status', label: '状态', type: 'select', options: [{ value: '', label: '不变' }, { value: '1', label: '启用' }, { value: '0', label: '停用' }] },
         { n: 'password', label: '重置密码', type: 'password' },
       ],
+      hint: '不能停用/降权当前登录的自己；系统须保留至少一名在用管理员。柜员忘记密码可在此重置。',
       result: d => kv({ '工号': d.user.employee_no, '姓名': d.user.name, '角色': d.user.role_label, '状态': d.user.status_label }),
     },
     {
@@ -376,10 +388,9 @@ const OPERATIONS = {
         { n: 'action', label: '操作类型', type: 'select', options: ACTION_OPTIONS },
         { n: 'object_type', label: '对象类型', type: 'select', options: OBJECT_OPTIONS },
         { n: 'result', label: '结果', type: 'select', options: [{ value: '', label: '全部' }, { value: 'SUCCESS', label: '成功' }, { value: 'FAILURE', label: '失败' }] },
-        { n: 'only_failure', label: '仅看失败', type: 'checkboxVal', value: '1' },
         { n: 'start', label: '起始日期', type: 'date' }, { n: 'end', label: '结束日期', type: 'date' },
       ],
-      result: d => d.logs.length ? tbl(d.logs, [{ k: 'created_at', label: '时间' }, { k: 'operator', label: '操作人' }, { k: 'action', label: '操作', fmt: actionLabel }, { k: 'object_type', label: '对象', fmt: objectLabel }, { k: 'object_id', label: '对象编号' }, { k: 'result', label: '结果', fmt: resultLabel }]) : `<p class="hint">${d.hint || '无记录'}</p>`,
+      result: d => d.logs.length ? tbl(d.logs, [{ k: 'created_at', label: '时间' }, { k: 'operator', label: '操作人' }, { k: 'action', label: '操作', fmt: actionLabel }, { k: 'object_type', label: '对象', fmt: objectLabel }, { k: 'object_id', label: '对象编号' }, { k: 'result', label: '结果', fmt: resultLabel }, { k: 'detail', label: '详情/原因', fmt: v => !v ? '' : (typeof v === 'object' ? (v.reason || Object.entries(v).map(([k, val]) => `${k}=${val}`).join('，')) : v) }]) : `<p class="hint">${d.hint || '无记录'}</p>`,
     },
     {
       code: 'UC-504', name: '数据备份(下载)', method: 'GET', path: '/api/admin/backup', type: 'download',
@@ -389,7 +400,7 @@ const OPERATIONS = {
       code: 'UC-504b', name: '数据恢复(上传)', method: 'POST', path: '/api/admin/restore', type: 'upload',
       fields: [{ n: 'confirm', label: '我已确认恢复风险', type: 'checkboxVal', value: 'true', required: true }],
       hint: '高风险操作：会用备份文件覆盖当前数据',
-      result: d => kv(d.restored),
+      result: d => kv(Object.fromEntries(Object.entries(d.restored || {}).map(([k, v]) => [objectLabel(k), v]))),
     },
   ],
 };
@@ -405,5 +416,15 @@ const COMMON = [
     ],
     hint: '修改本人登录密码，成功后下次登录请使用新密码',
     validate: v => v.new_password !== v.confirm_new ? '两次输入的新密码不一致' : null,
+  },
+  {
+    code: 'UC-00A', name: '我的经办记录', method: 'GET', path: '/api/my-activity',
+    fields: [],
+    hint: '查看本人近期经办的业务与操作（最多 200 条）',
+    result: d => d.logs.length ? tbl(d.logs, [
+      { k: 'created_at', label: '时间' }, { k: 'action', label: '操作', fmt: actionLabel },
+      { k: 'object_type', label: '对象', fmt: objectLabel }, { k: 'object_id', label: '对象编号' },
+      { k: 'result', label: '结果', fmt: resultLabel },
+    ]) : `<p class="hint">${d.hint || '暂无经办记录'}</p>`,
   },
 ];

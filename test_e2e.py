@@ -311,6 +311,9 @@ def t_creditcard():
     ok("402 额度0→E-1 [边界]", E(api("POST", "/api/creditcard/approve", CCK, json={"card_no": card, "decision": "APPROVED", "credit_limit": "0", "bill_day": "5", "repay_day": "20"})) == "E-1")
     ok("402 账单日越界→E-DAY [边界]", E(api("POST", "/api/creditcard/approve", CCK, json={"card_no": card, "decision": "APPROVED", "credit_limit": "20000", "bill_day": "30", "repay_day": "20"})) == "E-DAY")
     ok("402 审批激活成功 [正常流]", OK(api("POST", "/api/creditcard/approve", CCK, json={"card_no": card, "decision": "APPROVED", "credit_limit": "20000", "bill_day": "5", "repay_day": "20"})))
+    rcard = api("POST", "/api/creditcard/apply", CCK, json={"customer_no": cno, "card_type": "普卡"})["data"]["credit_card"]["card_no"]
+    rj = api("POST", "/api/creditcard/approve", CCK, json={"card_no": rcard, "decision": "REJECTED", "reason": "资料不足"})
+    ok("402 拒绝返回数据+原因 [判定]", OK(rj) and rj.get("data", {}).get("credit_card", {}).get("reject_reason") == "资料不足")
 
     # UC-405 预借现金（先测，制造账单）
     ok("405 取现0→E-AMT [边界]", E(api("POST", "/api/creditcard/cash-advance", CCK, json={"card_no": card, "id_no": cust["id_no"], "amount": "0"})) == "E-AMT")
@@ -398,6 +401,7 @@ def t_auth():
     ok("000 修改成功 [正常流]", OK(api("POST", "/api/change-password", tok, json={"old_password": "old123", "new_password": "new456"})))
     ok("000 新密码可登录 [正常流]", cl.post("/api/login", json={"employee_no": emp, "password": "new456"}).get_json().get("success") is True)
     ok("000 旧密码登录失败 [判定]", cl.post("/api/login", json={"employee_no": emp, "password": "old123"}).get_json().get("success") is not True)
+    ok("00A 我的经办记录 [正常流]", OK(api("GET", "/api/my-activity", S, query={})))
 
 
 if __name__ == "__main__":
