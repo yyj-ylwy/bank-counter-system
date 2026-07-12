@@ -8,7 +8,7 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, dec, m, oid, now, as_int, norm_id, check_identity,
-    find_customer, check_account, write_txn, write_audit,
+    find_customer, resolve_loan, resolve_account_no, check_account, write_txn, write_audit,
     get_param, get_param_dec, customer_view, txn_view, parse_date_range, new_contract_no,
 )
 
@@ -251,18 +251,20 @@ def _acc_no(db, ln):
 @clerk
 def repay():
     d = _body()
-    contract_no = (d.get("contract_no") or "").strip()
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户（归属自动成立）
     amount = D(d.get("amount") or 0)
-    account_no = (d.get("account_no") or "").strip()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
     if amount <= 0:
         return fail("E-AMT", "还款金额必须大于零", 400)
 
     db = get_db()
-    ln = db.loan.find_one({"contract_no": contract_no})
-    if not ln:
-        return fail("E-NOLOAN", "未找到贷款")
-    repay_no = account_no or _acc_no(db, ln)
+    ln, cust, rerr = resolve_loan(db, ident, d.get("contract_no"),
+                                  statuses=[C.LOAN_ACTIVE, C.LOAN_OVERDUE])  # 免输合同号，凭身份定位存续贷款
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    contract_no = ln["contract_no"]
+    repay_no, _c, aerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号，凭身份定位还款储蓄账户
+    if aerr:
+        return fail(aerr[0], aerr[1])
     # 逾期罚息日利率（可能未维护）：仅在贷款确实逾期时才要求存在，避免正常还款被参数缺失阻断
     raw_overdue_rate = get_param(db, C.P_LOAN_OVERDUE_RATE)
 
@@ -282,10 +284,7 @@ def repay():
         acc, err = check_account(db, repay_no, need_amount=amount, session=s)  # E-1 余额不足
         if err:
             return None, err
-        cust, ierr = check_identity(db, acc["customer_id"], ident, session=s)  # 核验扣款账户持有人身份（证件号或邮箱）
-        if ierr:
-            return None, ierr
-        if acc["customer_id"] != loan["customer_id"]:  # 扣款账户须属该贷款客户，杜绝用他人余额还他人贷款
+        if acc["customer_id"] != loan["customer_id"]:  # 扣款账户须属该贷款客户（凭身份定位已保证，此为并发兜底）
             return None, ("E-OWNER", "还款扣款账户不属于该贷款客户")
         # 罚息优先冲抵，剩余冲抵本金；本金与应收罚息全部还清才结清
         pay_penalty = penalty if amount >= penalty else amount

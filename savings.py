@@ -8,7 +8,7 @@ from auth import require_role
 from common import (
     ok, fail, D, dec, m, oid, now,
     validate_id_no, validate_phone, validate_email, norm_id, check_identity, match_identity,
-    find_customer, check_account, write_txn, write_audit,
+    find_customer, resolve_account_no, check_account, write_txn, write_audit,
     get_param_dec, customer_view, account_view, txn_view, parse_date_range,
     new_customer_no, new_account_no, new_debit_card_no,
 )
@@ -98,12 +98,15 @@ def open_account():
 @clerk
 def deposit():
     d = _body()
-    account_no = (d.get("account_no") or "").strip()
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户
     amount = D(d.get("amount") or 0)
     if amount <= 0 or amount > C.TXN_AMOUNT_MAX:  # E-2
         return fail("E-2", f"存款金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}")
 
     db = get_db()
+    account_no, _cust, rerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号
+    if rerr:
+        return fail(rerr[0], rerr[1])
 
     def txn(s):
         acc, err = check_account(db, account_no, session=s)  # E-1 状态异常
@@ -142,24 +145,21 @@ def _today_withdrawn(db, account_id, session=None):
 @clerk
 def withdraw():
     d = _body()
-    account_no = (d.get("account_no") or "").strip()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位并核验（归属自动成立）
     amount = D(d.get("amount") or 0)
     if amount <= 0 or amount > C.TXN_AMOUNT_MAX:
         return fail("E-AMT", f"取款金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}", 400)
 
     db = get_db()
+    account_no, _cust, rerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号，凭身份定位
+    if rerr:
+        return fail(rerr[0], rerr[1])
     limit = get_param_dec(db, C.P_WITHDRAW_DAILY_LIMIT, "50000")
 
     def txn(s):
         acc, err = check_account(db, account_no, need_amount=amount, session=s)  # E-1余额/E-3状态
         if err:
             return None, err
-        cust, ierr = check_identity(db, acc["customer_id"], ident, session=s)  # 取款须核验持卡人身份（证件号或邮箱）
-        if ierr:
-            write_audit(db, user_id=g.user["_id"], action=C.TXN_WITHDRAW, object_type="account",
-                        object_id=account_no, result=C.RESULT_FAILURE, detail={"reason": ierr[1]}, session=s)
-            return None, ierr
         if _today_withdrawn(db, acc["_id"], s) + amount > limit:  # E-2 当日限额
             return None, ("E-2", f"超过当日取款限额 {limit}")
         new_bal = dec(acc["balance"]) - amount
@@ -185,20 +185,22 @@ def withdraw():
 def transfer():
     d = _body()
     ttype = (d.get("transfer_type") or "INTRA").strip().upper()  # INTRA=行内, INTER=跨行
-    from_no = (d.get("from_account_no") or "").strip()
     to_no = (d.get("to_account_no") or "").strip()
     to_bank = (d.get("to_bank") or "").strip()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 转出方 邮箱或证件号，任一即可核验
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 转出方 证件号或邮箱，二选一定位并核验（归属自动成立）
     amount = D(d.get("amount") or 0)
 
     if ttype not in ("INTRA", "INTER"):  # 转账类型必须合法，避免非法值被静默当跨行
         return fail("E-OP", "转账类型非法（本行/跨行）", 400)
     if amount <= 0 or amount > C.TXN_AMOUNT_MAX:
         return fail("E-AMT", f"转账金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}", 400)
-    if ttype == "INTRA" and from_no == to_no:  # E-3 同一账户
-        return fail("E-3", "转出与转入不能为同一账户")
 
     db = get_db()
+    from_no, _c, rerr = resolve_account_no(db, ident, d.get("from_account_no"))  # 转出方免输账号
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    if ttype == "INTRA" and from_no == to_no:  # E-3 同一账户
+        return fail("E-3", "转出与转入不能为同一账户")
     fee_rate = get_param_dec(db, C.P_TRANSFER_FEE_RATE, "0.001")
 
     def txn(s):
@@ -206,11 +208,6 @@ def transfer():
         src, err = check_account(db, from_no, need_amount=amount + fee, session=s)  # E-2 余额
         if err:
             return None, err
-        cust, ierr = check_identity(db, src["customer_id"], ident, session=s)  # 转账须核验转出方身份（证件号或邮箱）
-        if ierr:
-            write_audit(db, user_id=g.user["_id"], action="TRANSFER", object_type="account",
-                        object_id=from_no, result=C.RESULT_FAILURE, detail={"reason": ierr[1]}, session=s)
-            return None, ierr
 
         if ttype == "INTRA":
             dst, derr = check_account(db, to_no, session=s)  # E-1 转入账户异常
@@ -316,21 +313,14 @@ def query():
 @clerk
 def card_op():
     d = _body()
-    account_no = (d.get("account_no") or "").strip()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位并核验（归属自动成立）
     op = (d.get("op") or "").strip().upper()  # LOSS 挂失 / UNLOSS 解挂 / REISSUE 补卡
 
     db = get_db()
-    acc = db.account.find_one({"account_no": account_no}) or db.account.find_one({"card_no": account_no})
-    if not acc:
-        return fail("E-NOACC", "未找到账户")
-    cust = db.customer.find_one({"_id": acc["customer_id"]})
-    if not cust or not match_identity(cust, ident):  # E-1 身份与账户不匹配（挂失/补卡须核验）
-        write_audit(db, user_id=g.user["_id"], action=f"CARD_{op or 'OP'}", object_type="account",
-                    object_id=account_no, result=C.RESULT_FAILURE, detail={"reason": "证件不匹配"})
-        return fail("E-1", "证件与账户归属不一致")
-    if acc["status"] == C.ACCOUNT_CLOSED:
-        return fail("E-CLOSED", "账户已销户")
+    account_no, cust, rerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号，凭身份定位其账户
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    acc = db.account.find_one({"account_no": account_no})  # 归属已由 resolve 保证
 
     cur = acc.get("card_status")
     if op == "LOSS":
@@ -370,18 +360,13 @@ def card_op():
 @clerk
 def close_account():
     d = _body()
-    account_no = (d.get("account_no") or "").strip()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位并核验（归属自动成立）
 
     db = get_db()
-    acc = db.account.find_one({"account_no": account_no})
-    if not acc:
-        return fail("E-NOACC", "未找到账户")
-    cust = db.customer.find_one({"_id": acc["customer_id"]})
-    if not cust or not match_identity(cust, ident):  # E-1 身份核验失败（销户须核验）
-        write_audit(db, user_id=g.user["_id"], action=C.TXN_CLOSE_ACCOUNT, object_type="account",
-                    object_id=account_no, result=C.RESULT_FAILURE, detail={"reason": "身份核验失败"})
-        return fail("E-1", "身份核验失败，证件与账户不一致")
+    account_no, cust, rerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号，凭身份定位其账户
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    acc = db.account.find_one({"account_no": account_no})  # 归属已由 resolve 保证
     if acc["status"] != C.ACCOUNT_NORMAL:  # E-4 冻结/挂失/已销户
         return fail("E-4", f"账户当前为「{C.ACCOUNT_STATUS_LABEL.get(acc['status'])}」，不可销户")
     # E-2 未结清贷款

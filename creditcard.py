@@ -14,7 +14,8 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, dec, m, now, as_int,
-    find_customer, check_account, write_txn, write_audit, verify_owner, norm_id, check_identity, match_identity,
+    find_customer, resolve_credit_card, resolve_account_no, check_account, write_txn, write_audit,
+    verify_owner, norm_id, check_identity, match_identity,
     get_param_dec, customer_view, txn_view, new_credit_card_no,
 )
 
@@ -229,16 +230,18 @@ def generate_bill():
 @clerk
 def repay():
     d = _body()
-    card_no = (d.get("card_no") or "").strip()
-    account_no = (d.get("account_no") or "").strip()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户（归属自动成立）
     repay_type = (d.get("repay_type") or "PARTIAL").strip().upper()  # FULL/MIN/PARTIAL
     if repay_type not in ("FULL", "MIN", "PARTIAL"):  # 拼错不再静默当部分还款
         return fail("E-OP", "还款方式非法（全额/最低/部分）", 400)
     db = get_db()
-    cc = db.credit_card.find_one({"card_no": card_no})
-    if not cc:
-        return fail("E-NOCARD", "未找到信用卡")
+    cc, cust, rerr = resolve_credit_card(db, ident, d.get("card_no"))  # 免输卡号，凭身份定位信用卡
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    card_no = cc["card_no"]
+    account_no, _c, aerr = resolve_account_no(db, ident, d.get("account_no"))  # 免输账号，凭身份定位还款储蓄账户
+    if aerr:
+        return fail(aerr[0], aerr[1])
     bill = _oldest_unpaid_bill(db, cc["_id"])  # 优先还最早未清账单
     if not bill:  # E-3 已结清
         return fail("E-3", "当前没有待还款账单，无需还款")
@@ -272,10 +275,7 @@ def repay():
         acc, err = check_account(db, account_no, need_amount=pay, session=s)  # E-1 余额不足
         if err:
             return None, err
-        _cust, ierr = check_identity(db, cc2["customer_id"], ident, session=s)  # 还款须核验持卡人身份（证件号或邮箱）
-        if ierr:
-            return None, ierr
-        if acc["customer_id"] != cc2["customer_id"]:  # 还款储蓄账户须属持卡人本人，杜绝用他人余额清卡
+        if acc["customer_id"] != cc2["customer_id"]:  # 还款储蓄账户须属持卡人本人（凭身份定位已保证，此为并发兜底）
             return None, ("E-OWNER", "还款储蓄账户不属于持卡人")
         db.account.update_one({"_id": acc["_id"]},
                               {"$set": {"balance": m(dec(acc["balance"]) - pay)}}, session=s)
@@ -321,24 +321,17 @@ def _today_cash(db, cc_id, session=None):
 @clerk
 def cash_advance():
     d = _body()
-    card_no = (d.get("card_no") or "").strip()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户（归属自动成立）
     amount = D(d.get("amount") or 0)
     payout_account = (d.get("payout_account") or "").strip()  # 空=现金，否则转入该储蓄账户
     if amount <= 0:
         return fail("E-AMT", "取现金额必须大于零", 400)
 
     db = get_db()
-    cc = db.credit_card.find_one({"card_no": card_no})
-    if not cc:
-        return fail("E-NOCARD", "未找到信用卡")
-    cust = db.customer.find_one({"_id": cc["customer_id"]})
-    if not ident:  # UC-405 前置条件：客户身份已核验
-        return fail("E-REQ", "请提供证件号或邮箱以核验客户身份", 400)
-    if not match_identity(cust, ident):  # E-3 身份核验失败
-        write_audit(db, user_id=g.user["_id"], action=C.TXN_CC_CASH, object_type="credit_card",
-                    object_id=card_no, result=C.RESULT_FAILURE, detail={"reason": "身份核验失败"})
-        return fail("E-3", "身份核验失败，证件/邮箱与信用卡不一致")
+    cc, cust, rerr = resolve_credit_card(db, ident, d.get("card_no"))  # 免输卡号，凭身份定位信用卡
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    card_no = cc["card_no"]
     if cc["status"] != C.CC_ACTIVE:  # E-1 挂失/冻结/异常
         return fail("E-1", f"信用卡状态为「{C.CC_STATUS_LABEL.get(cc['status'])}」，不可取现")
 
@@ -395,20 +388,13 @@ def cash_advance():
 @clerk
 def card_op():
     d = _body()
-    card_no = (d.get("card_no") or "").strip()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户（归属自动成立）
     op = (d.get("op") or "").strip().upper()  # LOSS/REISSUE/FREEZE/UNFREEZE/EXCEPTION
     db = get_db()
-    cc = db.credit_card.find_one({"card_no": card_no})
-    if not cc:  # E-1
-        return fail("E-1", "信用卡不存在，请重新核对卡号")
-    cust = db.customer.find_one({"_id": cc["customer_id"]})
-    if not ident:
-        return fail("E-REQ", "请提供证件号或邮箱以核验客户身份", 400)
-    if not match_identity(cust, ident):  # E-3 身份核验失败
-        write_audit(db, user_id=g.user["_id"], action=f"CC_{op or 'CARD'}", object_type="credit_card",
-                    object_id=card_no, result=C.RESULT_FAILURE, detail={"reason": "身份核验失败"})
-        return fail("E-3", "身份核验失败")
+    cc, cust, rerr = resolve_credit_card(db, ident, d.get("card_no"))  # 免输卡号，凭身份定位信用卡
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    card_no = cc["card_no"]
 
     cur = cc["status"]
     updates = {}

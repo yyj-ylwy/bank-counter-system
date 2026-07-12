@@ -18,7 +18,7 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, D6, dec, m, now, norm_id, check_identity,
-    find_customer, check_account, write_txn, write_audit,
+    find_customer, resolve_fx_account, check_account, write_txn, write_audit,
     get_param, get_param_dec, customer_view, txn_view, parse_date_range, new_fx_account_no,
 )
 
@@ -233,8 +233,8 @@ def open_subaccount():
 @clerk
 def trade():
     d = _body()
-    fx_no = (d.get("fx_account_no") or "").strip()
-    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 邮箱或证件号，任一即可核验
+    ident = (d.get("ident") or d.get("id_no") or "").strip()  # 证件号或邮箱，二选一定位客户（归属自动成立）
+    currency = (d.get("currency") or "").strip().upper()      # 币种：定位该客户对应外汇子户
     direction = (d.get("direction") or "").strip().upper()  # BUY=客户买入外币 / SELL=客户卖出外币
     foreign = D(d.get("amount") or 0)  # 外币金额
     if direction not in ("BUY", "SELL"):
@@ -243,14 +243,10 @@ def trade():
         return fail("E-AMT", "外币金额必须大于零", 400)
 
     db = get_db()
-    fx = db.fx_account.find_one({"fx_account_no": fx_no})
-    if not fx:
-        return fail("E-NOFX", "未找到外汇子户")
-    cust, ierr = check_identity(db, fx["customer_id"], ident)  # 外汇买卖须核验持卡人身份（证件号或邮箱）
-    if ierr:
-        write_audit(db, user_id=g.user["_id"], action="FX_TRADE", object_type="fx_account",
-                    object_id=fx_no, result=C.RESULT_FAILURE, detail={"reason": ierr[1]})
-        return fail(ierr[0], ierr[1])
+    fx, ferr = resolve_fx_account(db, ident, currency, d.get("fx_account_no"))  # 免输子户号，凭身份+币种定位
+    if ferr:
+        return fail(ferr[0], ferr[1])
+    fx_no = fx["fx_account_no"]
     if fx["status"] != C.FX_NORMAL:
         return fail("E-FXSTAT", f"外汇子户状态为「{C.FX_STATUS_LABEL.get(fx['status'])}」，不可交易")
 

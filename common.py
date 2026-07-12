@@ -193,6 +193,96 @@ def check_identity(db, customer_id, ident, session=None):
     return cust, None
 
 
+# ============ 凭 证件号/邮箱 免输账号定位（业务只需 ID 或邮箱二选一）============
+def resolve_account_no(db, ident, account_no=None, session=None):
+    """凭 证件号/邮箱(ident) 定位客户的储蓄账号，免输账号；account_no 仅在客户有多个账户时用于指定。
+    返回 (account_no, customer, error)。定位到的账户必属该客户，归属自动成立。"""
+    ident = (ident or "").strip()
+    account_no = (account_no or "").strip()
+    if not ident:
+        return None, None, ("E-ID", "请提供证件号或邮箱")
+    cust = find_customer(db, ident=ident)
+    if not cust:
+        return None, None, ("E-NOCUST", "未找到客户，请核对证件号或邮箱")
+    q = {"customer_id": cust["_id"], "status": {"$ne": C.ACCOUNT_CLOSED}}
+    if account_no:
+        q["account_no"] = account_no
+    accs = list(db.account.find(q, session=session))
+    if not accs:
+        return None, cust, ("E-NOACC", "该客户名下无可用储蓄账户" + ("，或该账号不属于此客户" if account_no else ""))
+    if len(accs) > 1:
+        return None, cust, ("E-MULTI", "该客户有多个储蓄账户，请补充账号后办理：" + "、".join(a["account_no"] for a in accs))
+    return accs[0]["account_no"], cust, None
+
+
+def resolve_credit_card(db, ident, card_no=None, statuses=None, session=None):
+    """凭 证件号/邮箱 定位客户的信用卡；card_no 仅在多卡时指定。返回 (credit_card, customer, error)。"""
+    ident = (ident or "").strip()
+    card_no = (card_no or "").strip()
+    if not ident:
+        return None, None, ("E-ID", "请提供证件号或邮箱")
+    cust = find_customer(db, ident=ident)
+    if not cust:
+        return None, None, ("E-NOCUST", "未找到客户，请核对证件号或邮箱")
+    q = {"customer_id": cust["_id"]}
+    if card_no:
+        q["card_no"] = card_no
+    if statuses:
+        q["status"] = {"$in": list(statuses)}
+    cards = list(db.credit_card.find(q, session=session))
+    if not cards:
+        return None, cust, ("E-NOCARD", "该客户名下无匹配信用卡")
+    if len(cards) > 1:
+        return None, cust, ("E-MULTI", "该客户有多张信用卡，请补充卡号：" + "、".join(c["card_no"] for c in cards))
+    return cards[0], cust, None
+
+
+def resolve_loan(db, ident, contract_no=None, statuses=None, session=None):
+    """凭 证件号/邮箱 定位客户的贷款；contract_no 仅在多笔时指定。返回 (loan, customer, error)。"""
+    ident = (ident or "").strip()
+    contract_no = (contract_no or "").strip()
+    if not ident:
+        return None, None, ("E-ID", "请提供证件号或邮箱")
+    cust = find_customer(db, ident=ident)
+    if not cust:
+        return None, None, ("E-NOCUST", "未找到客户，请核对证件号或邮箱")
+    q = {"customer_id": cust["_id"]}
+    if contract_no:
+        q["contract_no"] = contract_no
+    if statuses:
+        q["status"] = {"$in": list(statuses)}
+    loans = list(db.loan.find(q, session=session))
+    if not loans:
+        return None, cust, ("E-NOLOAN", "该客户名下无匹配贷款")
+    if len(loans) > 1:
+        return None, cust, ("E-MULTI", "该客户有多笔贷款，请补充合同号：" + "、".join(l["contract_no"] for l in loans))
+    return loans[0], cust, None
+
+
+def resolve_fx_account(db, ident, currency=None, fx_account_no=None, session=None):
+    """凭 证件号/邮箱(+币种) 定位客户的外汇子户；fx_account_no 直接指定时优先。返回 (fx_account, error)。"""
+    fx_account_no = (fx_account_no or "").strip()
+    if fx_account_no:
+        fx = db.fx_account.find_one({"fx_account_no": fx_account_no}, session=session)
+        return (fx, None) if fx else (None, ("E-NOFX", "未找到外汇账户"))
+    ident = (ident or "").strip()
+    currency = (currency or "").strip().upper()
+    if not ident:
+        return None, ("E-ID", "请提供证件号或邮箱")
+    cust = find_customer(db, ident=ident)
+    if not cust:
+        return None, ("E-NOCUST", "未找到客户，请核对证件号或邮箱")
+    q = {"customer_id": cust["_id"], "status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}}
+    if currency:
+        q["currency"] = currency
+    fxs = list(db.fx_account.find(q, session=session))
+    if not fxs:
+        return None, ("E-NOFX", "该客户名下无匹配外汇账户" + ("（该币种）" if currency else "，请先开立"))
+    if len(fxs) > 1:
+        return None, ("E-MULTI", "该客户有多个外汇账户，请指定币种或子户号：" + "、".join(f"{f['currency']}={f['fx_account_no']}" for f in fxs))
+    return fxs[0], None
+
+
 # ============ UC-INC-2 账户校验 ============
 def check_account(db, account_no, need_amount=None, session=None):
     """校验储蓄账户状态与余额。返回 (account, error)；error 为 (code, msg) 或 None。"""
