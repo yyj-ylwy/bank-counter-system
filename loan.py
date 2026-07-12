@@ -283,9 +283,11 @@ def repay():
         acc, err = check_account(db, repay_no, need_amount=amount, session=s)  # E-1 余额不足
         if err:
             return None, err
-        cust, ierr = check_identity(db, acc["customer_id"], id_no, session=s)  # 还款须核验扣款账户持有人身份
+        cust, ierr = check_identity(db, acc["customer_id"], id_no, session=s)  # 核验扣款账户持有人身份
         if ierr:
             return None, ierr
+        if acc["customer_id"] != loan["customer_id"]:  # 扣款账户须属该贷款客户，杜绝用他人余额还他人贷款
+            return None, ("E-OWNER", "还款扣款账户不属于该贷款客户")
         # 罚息优先冲抵，剩余冲抵本金；本金与应收罚息全部还清才结清
         pay_penalty = penalty if amount >= penalty else amount
         pay_principal = amount - pay_penalty
@@ -410,13 +412,17 @@ def query():
     if rng:
         q["created_at"] = rng
 
+    total = db.loan.count_documents(q)
     loans = list(db.loan.find(q).sort("created_at", -1).limit(500))
-    stats = {"count": len(loans),
-             "total_amount": float(sum((dec(l["amount"]) for l in loans), D(0))),
-             "total_balance": float(sum((dec(l["balance"]) for l in loans), D(0))),
-             "overdue_count": sum(1 for l in loans if l["status"] == C.LOAN_OVERDUE),
-             "paid_count": sum(1 for l in loans if l["status"] == C.LOAN_PAID_OFF)}
+    # 统计基于全量(count/聚合)，而非被截断的 500 条，避免命中 >500 时统计失真
+    agg = list(db.loan.aggregate([{"$match": q}, {"$group": {
+        "_id": None, "amt": {"$sum": "$amount"}, "bal": {"$sum": "$balance"}}}]))
+    stats = {"count": total,
+             "total_amount": float(dec(agg[0]["amt"])) if agg else 0.0,
+             "total_balance": float(dec(agg[0]["bal"])) if agg else 0.0,
+             "overdue_count": db.loan.count_documents({**q, "status": C.LOAN_OVERDUE}),
+             "paid_count": db.loan.count_documents({**q, "status": C.LOAN_PAID_OFF})}
+    hint = "无匹配数据" if not loans else (f"匹配 {total} 笔，列表仅显示最近 500 笔（统计为全量）" if total > 500 else None)
     write_audit(db, user_id=g.user["_id"], action="LOAN_QUERY", object_type="loan",
                 object_id="-", result=C.RESULT_SUCCESS)
-    return ok({"loans": [loan_view(db, l) for l in loans], "stats": stats,
-               "hint": None if loans else "无匹配数据"})
+    return ok({"loans": [loan_view(db, l) for l in loans], "stats": stats, "hint": hint})

@@ -358,8 +358,9 @@ def change():
             updates["status"] = C.FX_CLOSED
         else:  # REBIND
             new_acc = db.account.find_one({"account_no": new_no}, session=s)
-            if not new_acc or new_acc["customer_id"] != f["customer_id"] or new_acc["status"] != C.ACCOUNT_NORMAL:
-                return None, ("E-3", "新关联账户不存在、状态异常或不属于该客户")
+            if (not new_acc or new_acc["customer_id"] != f["customer_id"]
+                    or new_acc["status"] != C.ACCOUNT_NORMAL or new_acc.get("card_status") == C.CARD_LOST):
+                return None, ("E-3", "新关联账户不存在、状态异常/已挂失或不属于该客户")
             updates["base_account_id"] = new_acc["_id"]
         db.fx_account.update_one({"_id": f["_id"]}, {"$set": updates}, session=s)
         write_audit(db, user_id=g.user["_id"], action=f"FX_{ctype}", object_type="fx_account",

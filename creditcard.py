@@ -178,19 +178,19 @@ def generate_bill():
         return fail("E-DUP", f"账期 {cycle} 的账单已存在")
     min_rate = get_param_dec(db, C.P_CC_MIN_REPAY_RATE, "0.10")
 
-    # 账期月份区间：只归集交易时间落在该账期(YYYYMM 当月)内的未入账流水，防把其它月份债务塞进本账期错期
+    # 账期次月1号为归集上界：把所有【早于本账期截止】且尚未入账的取现/手续费滚入本期账单，
+    # 既排除未来月份债务(不塞进过去账期)，又不会因先出过空账单而让后续取现永远无法入账。
     cy, cm = int(cycle[:4]), int(cycle[4:])
     nm, ny = (cm % 12) + 1, cy + (1 if cm == 12 else 0)
-    cycle_start = now().replace(year=cy, month=cm, day=1, hour=0, minute=0, second=0, microsecond=0)
     cycle_end = now().replace(year=ny, month=nm, day=1, hour=0, minute=0, second=0, microsecond=0)
 
     def txn(s):
-        # 汇总本账期内尚未入账的消费/取现/手续费流水（事务内查+标记，避免账单与入账不一致导致重复计费）
+        # 汇总截止本账期尚未入账的取现/手续费流水（事务内查+标记，避免账单与入账不一致导致重复计费）
         unbilled = list(db.business_transaction.find({
             "related_id": cc["_id"],
             "business_type": {"$in": [C.TXN_CC_CASH, C.TXN_CC_CASH_FEE]},
             "bill_cycle": {"$exists": False},
-            "txn_time": {"$gte": cycle_start, "$lt": cycle_end}}, session=s))
+            "txn_time": {"$lt": cycle_end}}, session=s))
         total = sum((dec(t["amount"]) for t in unbilled), D(0))
         details = [{"txn_no": t["txn_no"], "type": C.TXN_TYPE_LABEL.get(t["business_type"]),
                     "amount": float(dec(t["amount"])),

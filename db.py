@@ -56,6 +56,25 @@ def _no_txn_support(err):
             or "Transactions are not supported" in msg)
 
 
+def txn_supported():
+    """探测当前 MongoDB 是否支持事务（Atlas 副本集支持，本地单机 mongod 不支持）。
+    供破坏性全量操作(如数据恢复)在无事务时拒绝执行，避免半恢复损坏且谎报回滚。"""
+    global _txn_supported
+    if _txn_supported is not None:
+        return _txn_supported
+    client = get_client()
+    try:
+        with client.start_session() as session:
+            with session.start_transaction():
+                get_db().system_param.find_one({}, session=session)  # 事务内做一次读来触发探测
+        _txn_supported = True
+    except OperationFailure as err:
+        _txn_supported = not _no_txn_support(err)
+    except Exception:  # noqa: BLE001 探测失败不武断降级（Atlas 上按支持处理）
+        _txn_supported = True
+    return _txn_supported
+
+
 def run_in_transaction(fn):
     """在事务中执行 fn(session)。fn 内所有数据库操作都要带上 session=session。"""
     global _txn_supported

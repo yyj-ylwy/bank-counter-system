@@ -8,7 +8,7 @@ from pymongo.errors import DuplicateKeyError
 from werkzeug.security import generate_password_hash
 
 import constants as C
-from db import get_db, run_in_transaction
+from db import get_db, run_in_transaction, txn_supported
 from auth import require_role
 from common import ok, fail, oid, now, dec, parse_date_range, as_int
 
@@ -96,7 +96,10 @@ def update_user():
             return fail("E-2", "角色不存在")
         updates["role"] = d["role"]
     if "status" in d and d["status"] is not None:
-        updates["status"] = as_int(d["status"])  # 1启用 0停用（非法→400 而非 500）
+        st = as_int(d["status"])
+        if st not in (0, C.USER_ACTIVE):  # 只允许 0停用 / 1启用，杜绝枚举外脏值
+            return fail("E-REQ", "状态非法，应为 0（停用）或 1（启用）", 400)
+        updates["status"] = st
     if d.get("password"):
         updates["password_hash"] = generate_password_hash(d["password"])
     if not updates:
@@ -160,6 +163,8 @@ def upsert_param():
     # 外汇买卖价一致性：买入价(银行买)不得高于卖出价(银行卖)，否则套利/亏损
     fx_pair = next(((b, s) for (b, s) in C.PARAM_FX.values() if key in (b, s)), None)
     if fx_pair:
+        if x <= 0:  # 汇率为 0 会导致换算得 0、无法交易
+            return fail("E-1", "汇率必须大于 0", 400)
         b_key, s_key = fx_pair
         other = db.system_param.find_one({"param_key": s_key if key == b_key else b_key})
         if other is not None:
@@ -265,6 +270,8 @@ def restore():
         return fail("E-REQ", "请上传备份文件（form-data 字段 file）或在 payload 中提交内容", 400)
     if not _truthy(confirm):
         return fail("E-CONFIRM", "恢复为高风险操作，请二次确认（confirm=true）", 400)
+    if not txn_supported():  # 破坏性全量操作必须在事务下进行，否则半恢复不可回滚且会谎报回滚
+        return fail("E-3", "当前数据库不支持事务（需副本集/Atlas），为避免恢复中途失败导致数据损坏，已拒绝恢复", 400)
 
     try:
         parsed = json_util.loads(raw)
@@ -281,7 +288,7 @@ def restore():
         if c in data and not isinstance(data[c], list):
             return fail("E-2", f"备份中集合 {c} 数据格式非法，拒绝恢复")
     for c, n in (meta.get("collections") or {}).items():
-        got = len(data.get(c, [])) if isinstance(data.get(c), list) else None
+        got = 0 if c not in data else (len(data[c]) if isinstance(data[c], list) else None)
         if got is not None and got != n:
             return fail("E-2", f"备份记录数校验失败：集合 {c} 声明 {n} 条、实际 {got} 条，文件可能被截断")
     if meta.get("md5"):
@@ -299,6 +306,12 @@ def restore():
                 if docs:
                     db[c].insert_many(docs, session=s)
                 restored[c] = len(docs)
+        # 恢复后必须仍有在用管理员、且当前操作管理员仍存在，否则回滚，避免无人可管理/自锁
+        if "user_account" in data:
+            if db.user_account.count_documents({"role": C.ROLE_ADMIN, "status": C.USER_ACTIVE}, session=s) == 0:
+                raise ValueError("备份中无在用管理员，恢复将导致无人可登录管理，已拒绝")
+            if db.user_account.count_documents({"_id": g.user["_id"]}, session=s) == 0:
+                raise ValueError("恢复后当前管理员账号不存在，会立即失去管理权限，已拒绝")
         issues = _integrity_scan(db, s)
         if issues:
             raise ValueError("外键完整性校验未通过：" + "；".join(issues[:10]))
@@ -348,4 +361,9 @@ def _integrity_scan(db, s):
     check("credit_card", "customer_id", cust, "customer")
     check("credit_card_bill", "credit_card_id", cc, "credit_card")
     check("system_param", "changed_by", usr, "user_account")
+    # 对账核心表与审计表的外键也要扫，避免残留孤儿引用却报 integrity=OK
+    check("business_transaction", "customer_id", cust, "customer")
+    check("business_transaction", "account_id", acc, "account")
+    check("business_transaction", "user_id", usr, "user_account")
+    check("audit_log", "user_id", usr, "user_account")
     return issues

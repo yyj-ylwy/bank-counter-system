@@ -247,6 +247,8 @@ def t_loan():
     r2 = api("GET", "/api/loan/overdue", L, query={"contract_no": lo})
     lorow2 = next((x for x in r2["data"]["loans"] if x["contract_no"] == lo), None) if OK(r2) else None
     ok("204 罚息净额=剩余500(不重复计提) [金额]", lorow2 and abs(lorow2["penalty"] - 500.0) < 0.01)
+    other2 = open_acct(bal="5000")
+    ok("204 用他人账户还贷→E-OWNER [安全]", E(api("POST", "/api/loan/repay", L, json={"contract_no": lo, "amount": "100", "account_no": other2["account_no"], "id_no": other2["id_no"]})) == "E-OWNER")
     ok("205 高天数过滤跳过 [边界]", OK(api("GET", "/api/loan/overdue", L, query={"days": "9999"})))
     ok("205b 合同不存在→E-NOLOAN [判定]", E(api("POST", "/api/loan/overdue", L, json={"contract_no": "X"})) == "E-NOLOAN")
     ok("205b 催收并置逾期 [组合]", OK(api("POST", "/api/loan/overdue", L, json={"contract_no": lo, "method": "电话", "note": "承诺还款"})))
@@ -360,6 +362,13 @@ def t_creditcard():
     r = api("POST", "/api/creditcard/bill", CCK, json={"card_no": card})
     ok("403 账单生成成功(有取现) [正常流]", OK(r))
     ok("403 账期重复→E-DUP [判定]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": card})) == "E-DUP")
+    # 回归验证：先出早期空账单，再取现，后续账单仍能归集该取现（不被永久锁死）
+    rc2 = api("POST", "/api/creditcard/apply", CCK, json={"customer_no": cno, "card_type": "普卡"})["data"]["credit_card"]["card_no"]
+    api("POST", "/api/creditcard/approve", CCK, json={"card_no": rc2, "decision": "APPROVED", "credit_limit": "20000", "bill_day": "5", "repay_day": "20"})
+    api("POST", "/api/creditcard/bill", CCK, json={"card_no": rc2, "bill_cycle": "202001"})  # 早期空账单
+    api("POST", "/api/creditcard/cash-advance", CCK, json={"card_no": rc2, "id_no": cust["id_no"], "amount": "500"})
+    rbill = api("POST", "/api/creditcard/bill", CCK, json={"card_no": rc2})  # 当月账单应归集该取现
+    ok("403 空账单后取现仍能入账(修回归) [资金]", OK(rbill) and rbill["data"]["bill"]["total_amount"] > 0)
 
     # UC-404 还款（有未还账单）
     ok("404 还款方式非法→E-OP [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"card_no": card, "account_no": cust["account_no"], "repay_type": "XX"})) == "E-OP")
