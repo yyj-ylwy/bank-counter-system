@@ -186,6 +186,7 @@ def transfer():
     d = _body()
     ttype = (d.get("transfer_type") or "INTRA").strip().upper()  # INTRA=行内, INTER=跨行
     to_no = (d.get("to_account_no") or "").strip()
+    to_ident = (d.get("to_ident") or "").strip()  # 收款方 证件号/邮箱（本行转账，免输收款账号）
     to_bank = (d.get("to_bank") or "").strip()
     ident = (d.get("ident") or d.get("id_no") or "").strip()  # 转出方 证件号或邮箱，二选一定位并核验（归属自动成立）
     amount = D(d.get("amount") or 0)
@@ -199,8 +200,15 @@ def transfer():
     from_no, _c, rerr = resolve_account_no(db, ident, d.get("from_account_no"))  # 转出方免输账号
     if rerr:
         return fail(rerr[0], rerr[1])
-    if ttype == "INTRA" and from_no == to_no:  # E-3 同一账户
-        return fail("E-3", "转出与转入不能为同一账户")
+    if ttype == "INTRA":  # 本行转账：收款方也凭 证件号/邮箱 定位账户（免输收款账号）
+        if to_ident:
+            to_no, _tc, terr = resolve_account_no(db, to_ident, to_no or None)
+            if terr:
+                return fail("E-1", f"收款方定位失败：{terr[1]}")
+        if not to_no:
+            return fail("E-1", "本行转账请填写收款方 证件号/邮箱（或收款账号）")
+        if from_no == to_no:  # E-3 同一账户
+            return fail("E-3", "转出与转入不能为同一账户")
     fee_rate = get_param_dec(db, C.P_TRANSFER_FEE_RATE, "0.001")
 
     def txn(s):
@@ -260,30 +268,21 @@ def transfer():
 @bp.get("/query")
 @clerk
 def query():
-    account_no = (request.args.get("account_no") or "").strip()
-    ident = (request.args.get("ident") or request.args.get("id_no")
-             or request.args.get("customer_no") or "").strip()  # 邮箱/证件号/客户号 任一
+    key = (request.args.get("key") or request.args.get("account_no") or request.args.get("ident")
+           or request.args.get("id_no") or "").strip()  # 账户 / 证件号 / 邮箱 任一
     start = request.args.get("start")
     end = request.args.get("end")
 
     db = get_db()
-    acc = None
-    cust = None
-    if account_no:
-        acc = db.account.find_one({"account_no": account_no})
-        if acc:
-            cust = db.customer.find_one({"_id": acc["customer_id"]})
-    else:
-        cust = find_customer(db, ident=ident or None)
-        if cust:
-            acc = db.account.find_one({"customer_id": cust["_id"]})
+    acc = db.account.find_one({"account_no": key}) if key else None  # 先按账户号
+    if acc:
+        cust = db.customer.find_one({"_id": acc["customer_id"]})
+    else:  # 再按 证件号 / 邮箱 / 客户号 定位客户及其账户
+        cust = find_customer(db, ident=key or None)
+        acc = db.account.find_one({"customer_id": cust["_id"]}) if cust else None
 
     if not cust or not acc:  # E-1 未找到
-        return fail("E-1", "未找到账户")
-    if account_no and ident and not match_identity(cust, ident):  # E-2 身份与账户归属不一致
-        write_audit(db, user_id=g.user["_id"], action="QUERY_ACCOUNT", object_type="account",
-                    object_id=acc["account_no"], result=C.RESULT_FAILURE, detail={"reason": "身份不匹配"})
-        return fail("E-2", "邮箱/证件号与账户归属不一致")
+        return fail("E-1", "未找到账户，请核对 账户/证件号/邮箱")
 
     # 时间范围过滤
     q = {"account_id": acc["_id"]}

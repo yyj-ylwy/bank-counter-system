@@ -109,21 +109,22 @@ const OPERATIONS = {
       fields: [
         { n: 'transfer_type', label: '转账类型', type: 'select', options: [{ value: 'INTRA', label: '本行转账（含本人账户互转）' }, { value: 'INTER', label: '跨行转账' }] },
         { n: 'ident', label: '转出方 邮箱或证件号', required: true, hint: '凭身份定位转出账户，免输账号' },
-        { n: 'to_account_no', label: '收款账号', required: true },
+        { n: 'to_ident', label: '收款方 邮箱或证件号', hint: '本行转账：凭收款方身份定位其账户，免输收款账号' },
+        { n: 'to_account_no', label: '收款账号', hint: '跨行转账必填；本行转账可留空（用收款方身份定位）' },
         { n: 'to_bank', label: '收款方开户银行', hint: '仅跨行转账需填写' },
         { n: 'amount', label: '转账金额', type: 'number', required: true },
         { n: 'from_account_no', label: '转出账号', hint: '转出方有多个账户时才需指定' },
       ],
       result: d => kv({ '转账方式': d.sub, '手续费': money(d.fee), '转出后余额': money(d.balance), '流水号': d.txn.txn_no }),
-      validate: v => v.transfer_type === 'INTER' && !v.to_bank ? '跨行转账请填写收款方开户银行' : null,
+      validate: v => v.transfer_type === 'INTER' ? (!v.to_account_no ? '跨行转账请填写收款账号' : (!v.to_bank ? '跨行转账请填写收款方开户银行' : null)) : ((!v.to_ident && !v.to_account_no) ? '本行转账请填写收款方 邮箱/证件号（或收款账号）' : null),
     },
     {
       code: 'UC-105', name: '账户/明细查询', method: 'GET', path: '/api/savings/query',
       fields: [
-        { n: 'account_no', label: '账号' }, { n: 'ident', label: '邮箱/证件号/客户号' },
+        { n: 'key', label: '账户/证件号/邮箱', required: true, hint: '账户号、证件号或注册邮箱，任填其一' },
         { n: 'start', label: '起始日期', type: 'date' }, { n: 'end', label: '结束日期', type: 'date' },
       ],
-      hint: '账号 / 邮箱 / 证件号 / 客户号 任填其一',
+      hint: '按 账户 / 证件号 / 邮箱 任一查询',
       result: d => kv({ '客户': d.customer.name + ' (' + d.customer.customer_no + ')', '账号': d.account.account_no, '余额': money(d.account.balance), '账户状态': d.account.status_label, '卡状态': d.account.card_status_label })
         + (d.account.note ? `<p class="hint">${d.account.note}</p>` : '')
         + '<h4>交易明细</h4>' + (d.transactions.length ? txnTable(d.transactions) : `<p class="hint">${d.empty_hint || '无明细'}</p>`),
