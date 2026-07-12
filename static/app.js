@@ -25,6 +25,41 @@ function money(v) {
   if (v == null || v === '') return '';
   return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+// 人民币金额大写（银行回单标配），如 1234.56 → 壹仟贰佰叁拾肆元伍角陆分
+function rmbUpper(num) {
+  num = Number(num);
+  if (!isFinite(num)) return '';
+  const neg = num < 0; num = Math.abs(num);
+  const fen = Math.round(num * 100);
+  if (fen === 0) return '零元整';
+  const DIG = ['零', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖'];
+  const SMALL = ['', '拾', '佰', '仟'], BIG = ['', '万', '亿', '兆'];
+  const yuan = Math.floor(fen / 100), jiao = Math.floor((fen % 100) / 10), fenn = fen % 10;
+  let intStr = '';
+  if (yuan !== 0) {
+    let ys = String(yuan); const groups = [];
+    while (ys.length) { groups.unshift(ys.slice(-4)); ys = ys.slice(0, -4); }
+    for (let g = 0; g < groups.length; g++) {
+      const gStr = groups[g], bigIdx = groups.length - 1 - g;
+      let gPart = '', started = false, pendingZero = false;
+      for (let i = 0; i < gStr.length; i++) {
+        const d = +gStr[i], smallIdx = gStr.length - 1 - i;
+        if (d === 0) { if (started) pendingZero = true; }
+        else { if (pendingZero) { gPart += '零'; pendingZero = false; } gPart += DIG[d] + SMALL[smallIdx]; started = true; }
+      }
+      if (gPart !== '') { if (intStr !== '' && +gStr < 1000) intStr += '零'; intStr += gPart + BIG[bigIdx]; }
+    }
+    intStr += '元';
+  }
+  let fracStr = '';
+  if (jiao === 0 && fenn === 0) fracStr = '整';
+  else {
+    if (yuan !== 0 && jiao === 0 && fenn !== 0) fracStr += '零';
+    if (jiao !== 0) fracStr += DIG[jiao] + '角';
+    if (fenn !== 0) fracStr += DIG[fenn] + '分';
+  }
+  return (neg ? '负' : '') + intStr + fracStr;
+}
 // 每个用例的菜单图标（纯展示，按用例编号取；未命中用默认点）
 const ICONS = {
   'UC-101': '🆕', 'UC-102': '💰', 'UC-103': '💸', 'UC-104': '🔄', 'UC-105': '🔍', 'UC-106': '🪪', 'UC-107': '🗑️', 'UC-108': '✏️',
@@ -47,6 +82,64 @@ function submitLabel(op) {
   if (op.type === 'download') return '下载备份';
   if (SUBMIT[op.code]) return SUBMIT[op.code];
   return op.method === 'GET' ? '查询' : '提交';  // GET 查询类统一"查询"，其余兜底"提交"
+}
+// 涉及资金变动/不可逆的操作，提交前弹出复核确认（银行二次确认规范）
+const CONFIRM_OPS = new Set([
+  'UC-102', 'UC-103', 'UC-104', 'UC-107',        // 存/取/转账/销户
+  'UC-203', 'UC-204',                            // 放款/贷款还款
+  'UC-303', 'UC-304',                            // 外汇买卖/账户变更
+  'UC-404', 'UC-405',                            // 信用卡还款/预借现金
+  'UC-501c', 'UC-502b', 'UC-504b',               // 改用户/改参数/恢复数据
+]);
+// 把已填字段整理成"标签: 值"复核表，下拉显示中文标签、金额显示千分位
+function buildSummary(op, values) {
+  const rows = [];
+  for (const f of op.fields) {
+    if (!(f.n in values)) continue;
+    let v = values[f.n];
+    if (f.type === 'checkboxVal' || f.type === 'checkbox') v = '是';
+    else if (f.type === 'select') {
+      const opt = f.options.find(o => (typeof o === 'object' ? o.value : o) == v);
+      v = opt ? (typeof opt === 'object' ? opt.label : opt) : v;
+    } else if (f.type === 'password') v = '••••••';
+    else if (f.type === 'number' && /amount|balance|limit|income/i.test(f.n)) v = money(v);
+    rows.push([f.label, v]);
+  }
+  // 人民币金额操作附大写（外汇金额为外币，不加）
+  if (values.amount != null && values.amount !== '' && op.code !== 'UC-303')
+    rows.push(['金额大写', rmbUpper(values.amount)]);
+  return rows;
+}
+// 复核弹窗，返回 Promise<boolean>
+function confirmDialog(op, values) {
+  return new Promise(resolve => {
+    const rows = buildSummary(op, values).map(([k, v]) =>
+      `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('');
+    const el = document.createElement('div');
+    el.className = 'modal-overlay';
+    el.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <h3>请核对信息后确认</h3>
+        <p class="modal-op">${esc(submitLabel(op))} · <span class="code">${esc(op.code)}</span> ${esc(op.name)}</p>
+        <table class="kv">${rows || '<tr><td>（无可展示的填写项）</td></tr>'}</table>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-act="cancel">取消</button>
+          <button type="button" class="btn" data-act="ok">确认无误，提交</button>
+        </div>
+      </div>`;
+    const close = ans => { el.remove(); document.removeEventListener('keydown', onKey); resolve(ans); };
+    const onKey = e => { if (e.key === 'Escape') close(false); };
+    el.addEventListener('click', e => {
+      if (e.target === el) close(false);
+      const act = e.target.dataset && e.target.dataset.act;
+      if (act === 'ok') close(true);
+      if (act === 'cancel') close(false);
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(el);
+    const okBtn = el.querySelector('[data-act=ok]');
+    if (okBtn) okBtn.focus();
+  });
 }
 function kv(obj) {
   return '<table class="kv">' + Object.entries(obj).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('') + '</table>';
@@ -113,7 +206,10 @@ function selectOp(op, li) {
       <h2><span class="ic-lg">${icon(op.code)}</span><span class="code">${op.code}</span>${esc(op.name)}</h2>
       ${op.hint ? `<p class="hint">${esc(op.hint)}</p>` : ''}
       <form id="opform">${fieldsHtml}${uploadHtml}
-        <button type="submit" class="btn">${esc(submitLabel(op))}</button>
+        <div class="form-actions">
+          <button type="submit" class="btn">${esc(submitLabel(op))}</button>
+          <button type="reset" class="btn btn-ghost">重填</button>
+        </div>
       </form>
       <div id="banner"></div>
       <div id="result"></div>
@@ -172,6 +268,12 @@ async function submitOp(op) {
   $('result').innerHTML = '';
   let values;
   try { values = gather(op); } catch (err) { return banner('err', err.message); }
+
+  // 资金/不可逆操作：提交前复核确认
+  if (CONFIRM_OPS.has(op.code)) {
+    const okToGo = await confirmDialog(op, values);
+    if (!okToGo) return banner('', '');
+  }
 
   const btn = $('opform').querySelector('button[type=submit]');
   const label = btn.textContent;
