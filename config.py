@@ -10,3 +10,6 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 
 # 登录令牌有效期（秒），默认 8 小时（一个营业日）
 TOKEN_MAX_AGE = int(os.environ.get("TOKEN_MAX_AGE", 8 * 3600))
+
+# Alpha Vantage 实时汇率（可选）：在 Render/本地环境变量里配 ALPHAVANTAGE_API_KEY 即可启用实时行情
+ALPHAVANTAGE_API_KEY = os.environ.get("ALPHAVANTAGE_API_KEY", "")

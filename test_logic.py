@@ -4,8 +4,11 @@
 """
 from datetime import datetime
 
+from decimal import Decimal
+
 from common import D, dec, D6, validate_id_no, validate_phone, norm_id
 from loan import add_months
+from forex import parse_av, quote_from_mid
 import constants as C
 
 
@@ -71,6 +74,21 @@ def test_transfer_fee():
     fee_rate = dec("0.001")
     assert str(D(amount * fee_rate)) == "10.00"
     assert str(D("0.001")) == "0.00"  # 反向确认：D() 只保留 2 位，不能用于费率
+
+
+def test_forex_live_parse_and_spread():
+    # Alpha Vantage 正常响应解析出中间价
+    good = '{"Realtime Currency Exchange Rate": {"5. Exchange Rate": "7.2500", "6. Last Refreshed": "2024-01-01 10:00"}}'
+    mid, info = parse_av(good)
+    assert mid == Decimal("7.2500")
+    # 限流响应返回 None + 说明
+    m2, i2 = parse_av('{"Note": "rate limit reached"}')
+    assert m2 is None and "rate limit" in i2
+    assert parse_av("not json")[0] is None
+    # 点差算价：卖出价高于中间价高于买入价（银行卖高买低）
+    buy, sell = quote_from_mid(Decimal("7.25"), Decimal("0.003"))
+    assert sell > Decimal("7.25") > buy
+    assert str(sell) == "7.271750" and str(buy) == "7.228250"
 
 
 if __name__ == "__main__":

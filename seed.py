@@ -33,6 +33,7 @@ DEFAULT_PARAMS = [
     ("RATE", C.P_CC_MIN_REPAY_RATE, "0.10"),
     ("RATE", C.P_CC_CASH_FEE_RATE, "0.01"),
     ("LIMIT", C.P_CC_CASH_DAILY_LIMIT, "20000"),
+    ("RATE", C.P_FX_SPREAD, "0.003"),   # 外汇挂牌点差 0.3%
 ]
 
 DEMO_CUSTOMERS = [

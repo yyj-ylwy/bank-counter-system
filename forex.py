@@ -3,16 +3,23 @@
 约定：牌价的「买入价」= 银行向客户买入外币时用（客户卖出外币）；
       「卖出价」= 银行卖出外币给客户时用（客户买入外币）。
 """
+import json
+import time
+import urllib.parse
+import urllib.request
+from decimal import Decimal, InvalidOperation
+
 from flask import Blueprint, request, g
 from pymongo.errors import DuplicateKeyError
 
+import config
 import constants as C
 from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, D6, dec, m, now,
     find_customer, check_account, write_txn, write_audit,
-    get_param, customer_view, txn_view, parse_date_range, new_fx_account_no,
+    get_param, get_param_dec, customer_view, txn_view, parse_date_range, new_fx_account_no,
 )
 
 bp = Blueprint("forex", __name__, url_prefix="/api/forex")
@@ -37,6 +44,59 @@ def fx_view(fx, cust=None, base=None):
     }
 
 
+# ========== 实时行情（Alpha Vantage）：查询实时中间价，按点差挂牌买卖价 ==========
+_rate_cache = {}          # currency -> (mid: Decimal, as_of: str, fetched_at: monotonic)
+_CACHE_TTL = 300          # 缓存 5 分钟，Alpha Vantage 免费额度有限（25 次/天）
+
+
+def parse_av(text):
+    """解析 Alpha Vantage CURRENCY_EXCHANGE_RATE 响应。返回 (中间价 Decimal 或 None, 说明)。"""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None, "行情响应解析失败"
+    r = data.get("Realtime Currency Exchange Rate")
+    if r and r.get("5. Exchange Rate"):
+        try:
+            return Decimal(str(r["5. Exchange Rate"])), r.get("6. Last Refreshed", "")
+        except InvalidOperation:
+            return None, "行情汇率字段异常"
+    # 限流/错误响应（Note / Information / Error Message）
+    for k in ("Note", "Information", "Error Message"):
+        if data.get(k):
+            return None, str(data[k])[:120]
+    return None, "行情响应格式无法识别"
+
+
+def fetch_live_mid(currency):
+    """取某币种对 CNY 的实时中间价（带缓存）。返回 (Decimal 或 None, 来源说明/错误)。"""
+    if not config.ALPHAVANTAGE_API_KEY:
+        return None, "未配置 Alpha Vantage API Key（环境变量 ALPHAVANTAGE_API_KEY）"
+    cached = _rate_cache.get(currency)
+    if cached and (time.monotonic() - cached[2]) < _CACHE_TTL:
+        return cached[0], f"缓存 · {cached[1]}"
+    q = urllib.parse.urlencode({
+        "function": "CURRENCY_EXCHANGE_RATE", "from_currency": currency,
+        "to_currency": "CNY", "apikey": config.ALPHAVANTAGE_API_KEY})
+    url = "https://www.alphavantage.co/query?" + q
+    try:
+        with urllib.request.urlopen(url, timeout=6) as resp:
+            text = resp.read().decode("utf-8")
+    except Exception as e:  # noqa: BLE001  网络/超时等
+        return None, f"行情服务连接失败：{e}"
+    mid, info = parse_av(text)
+    if mid is not None:
+        _rate_cache[currency] = (mid, info, time.monotonic())
+    return mid, info
+
+
+def quote_from_mid(mid, spread):
+    """由中间价与点差算挂牌买卖价：卖出价=中间价×(1+点差)，买入价=中间价×(1-点差)。"""
+    sell = D6(mid * (Decimal(1) + spread))   # 银行卖出（客户买入）价，偏高
+    buy = D6(mid * (Decimal(1) - spread))    # 银行买入（客户卖出）价，偏低
+    return buy, sell
+
+
 def read_rate(db, currency, direction):
     """direction: BUY=客户买入外币(用卖出价) / SELL=客户卖出外币(用买入价)。
     返回 (rate, rate_type) 或 (None, None)。"""
@@ -49,6 +109,64 @@ def read_rate(db, currency, direction):
     else:
         v = get_param(db, buy_key)
         return (D6(v), "BUY") if v is not None else (None, None)
+
+
+# ---------- UC-306 实时汇率查询（Alpha Vantage）----------
+@bp.get("/live-rate")
+@clerk
+def live_rate():
+    db = get_db()
+    spread = get_param_dec(db, C.P_FX_SPREAD, "0.003")
+    cur = (request.args.get("currency") or "").strip().upper()
+    currencies = [cur] if cur else list(C.SUPPORTED_CURRENCIES)
+    rows = []
+    for c in currencies:
+        if c not in C.PARAM_FX:
+            rows.append({"currency": c, "error": "不支持的币种"}); continue
+        mid, info = fetch_live_mid(c)
+        if mid is None:
+            rows.append({"currency": c, "error": info}); continue
+        buy, sell = quote_from_mid(mid, spread)
+        rows.append({"currency": c, "mid": float(D6(mid)), "buy": float(buy),
+                     "sell": float(sell), "spread": float(spread), "source": info})
+    return ok({"rates": rows,
+               "note": "买入价=银行买入(客户卖出)、卖出价=银行卖出(客户买入)；点差可在系统参数 FX_SPREAD 调整。此为实时报价，正式挂牌请用『实时行情挂牌』。"})
+
+
+# ---------- UC-307 实时行情挂牌（同步为牌价，买卖据此换算）----------
+@bp.post("/sync-rate")
+@clerk
+def sync_rate():
+    d = _body()
+    db = get_db()
+    spread = get_param_dec(db, C.P_FX_SPREAD, "0.003")
+    cur = (d.get("currency") or "").strip().upper()
+    currencies = [cur] if cur else list(C.SUPPORTED_CURRENCIES)
+    updated, failed = [], []
+    for c in currencies:
+        if c not in C.PARAM_FX:
+            failed.append({"currency": c, "reason": "不支持的币种"}); continue
+        mid, info = fetch_live_mid(c)
+        if mid is None:
+            failed.append({"currency": c, "reason": info}); continue
+        buy, sell = quote_from_mid(mid, spread)
+        buy_key, sell_key = C.PARAM_FX[c]
+        _upsert_fx_param(db, buy_key, str(buy))
+        _upsert_fx_param(db, sell_key, str(sell))
+        updated.append({"currency": c, "buy": float(buy), "sell": float(sell), "mid": float(D6(mid))})
+    if not updated:  # 全部失败（多为未配 Key 或触发限流）
+        return fail("E-LIVE", "行情挂牌失败：" + (failed[0]["reason"] if failed else "无可用行情"))
+    write_audit(db, user_id=g.user["_id"], action="FX_RATE_SYNC", object_type="system_param",
+                object_id="-", result=C.RESULT_SUCCESS, detail={"updated": updated})
+    return ok({"updated": updated, "failed": failed},
+              f"已按实时行情挂牌 {len(updated)} 个币种，外汇买卖即按新牌价换算")
+
+
+def _upsert_fx_param(db, key, value):
+    db.system_param.update_one(
+        {"param_key": key},
+        {"$set": {"param_type": "FX_RATE", "param_value": value,
+                  "changed_by": g.user["_id"], "changed_at": now()}}, upsert=True)
 
 
 # ---------- UC-301 外汇子户开立 ----------

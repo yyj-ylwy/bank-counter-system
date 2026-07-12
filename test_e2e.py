@@ -286,6 +286,11 @@ def t_forex():
     ok("305 日期非法→E-DATE [边界]", E(api("GET", "/api/forex/query", FX, query={"fx_account_no": fxno, "start": "2026-13-40"})) == "E-DATE")
     ok("305 正常查询成功 [正常流]", OK(api("GET", "/api/forex/query", FX, query={"fx_account_no": fxno})))
 
+    # UC-306/307 实时行情（测试环境无 Alpha Vantage Key，验证优雅降级）
+    r306 = api("GET", "/api/forex/live-rate", FX, query={"currency": "USD"})
+    ok("306 实时汇率查询接口可达 [正常流]", OK(r306) and r306["data"]["rates"][0].get("error"))
+    ok("307 无Key挂牌→E-LIVE [判定]", E(api("POST", "/api/forex/sync-rate", FX, json={"currency": "USD"})) == "E-LIVE")
+
 
 # ==================== 信用卡 UC-401 ~ 406 + 4Q ====================
 def t_creditcard():

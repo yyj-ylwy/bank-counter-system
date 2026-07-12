@@ -25,7 +25,7 @@ const ACTION_LABEL = {
   LOAN_APPLY: '贷款申请', LOAN_APPROVE: '贷款审批', LOAN_DISBURSE: '放款',
   LOAN_REPAY: '贷款还款', LOAN_OVERDUE: '贷款逾期催收', LOAN_QUERY: '贷款查询',
   FX_OPEN: '外汇开户', FX_RATE_CONFIRM: '外汇牌价确认', FX_BUY: '买入外币', FX_SELL: '卖出外币',
-  FX_FREEZE: '外汇账户冻结', FX_UNFREEZE: '外汇账户解冻', FX_CLOSE: '外汇账户关闭', FX_REBIND: '外汇改绑账户', FX_QUERY: '外汇查询',
+  FX_FREEZE: '外汇账户冻结', FX_UNFREEZE: '外汇账户解冻', FX_CLOSE: '外汇账户关闭', FX_REBIND: '外汇改绑账户', FX_QUERY: '外汇查询', FX_RATE_SYNC: '外汇实时挂牌',
   CC_APPLY: '信用卡申请', CC_APPROVE: '信用卡审批通过', CC_REJECT: '信用卡审批拒绝', CC_BILL: '信用卡账单生成',
   CC_REPAY: '信用卡还款', CC_CASH_ADVANCE: '预借现金',
   CC_LOSS: '信用卡挂失', CC_FREEZE: '信用卡冻结', CC_UNFREEZE: '信用卡解冻', CC_REISSUE: '信用卡补卡',
@@ -56,6 +56,7 @@ const PARAM_NAME = {
   WITHDRAW_DAILY_LIMIT: '单日取款上限', TRANSFER_FEE_RATE: '转账手续费率',
   CC_CREDIT_LIMIT_MAX: '信用卡最高授信额度', CC_MIN_REPAY_RATE: '信用卡最低还款比例',
   CC_CASH_ADVANCE_FEE_RATE: '预借现金手续费率', CC_CASH_DAILY_LIMIT: '预借现金单日上限',
+  FX_SPREAD: '外汇挂牌点差',
 };
 const PARAM_OPTIONS = Object.entries(PARAM_NAME).map(([value, label]) => ({ value, label }));
 const paramTypeLabel = t => PARAM_TYPE_LABEL[t] || t || '其他';
@@ -225,6 +226,25 @@ const OPERATIONS = {
       code: 'UC-302', name: '汇率查询与确认', method: 'GET', path: '/api/forex/rate',
       fields: [{ n: 'currency', label: '币种', type: 'select', options: CURRENCIES }, { n: 'direction', label: '交易方向', type: 'select', options: [{ value: 'BUY', label: '客户买入外币' }, { value: 'SELL', label: '客户卖出外币' }] }],
       result: d => kv({ '币种': d.currency, '买入价': d.buy_rate, '卖出价': d.sell_rate, '本次适用': d.apply_rate + '（' + fxRateType(d.apply_rate_type) + '）', '生效时间': d.effective_at, '说明': d.note }),
+    },
+    {
+      code: 'UC-306', name: '实时汇率查询', method: 'GET', path: '/api/forex/live-rate',
+      fields: [{ n: 'currency', label: '币种', type: 'select', options: [{ value: '', label: '全部币种' }].concat(CURRENCIES) }],
+      hint: '调取 Alpha Vantage 实时行情，按点差(FX_SPREAD)算出挂牌买卖价；仅查看，不改牌价',
+      result: d => tbl(d.rates, [
+        { k: 'currency', label: '币种' }, { k: 'mid', label: '实时中间价' },
+        { k: 'buy', label: '买入价(客户卖出)' }, { k: 'sell', label: '卖出价(客户买入)' },
+        { k: 'source', label: '来源/说明', fmt: (v, r) => r.error || v || '' },
+      ]) + (d.note ? `<p class="hint">${esc(d.note)}</p>` : ''),
+    },
+    {
+      code: 'UC-307', name: '实时行情挂牌', method: 'POST', path: '/api/forex/sync-rate',
+      fields: [{ n: 'currency', label: '币种', type: 'select', options: [{ value: '', label: '全部币种' }].concat(CURRENCIES) }],
+      hint: '按实时行情更新牌价（写入系统参数），之后外汇买卖即按新牌价换算',
+      result: d => tbl(d.updated, [
+        { k: 'currency', label: '币种' }, { k: 'mid', label: '中间价' },
+        { k: 'buy', label: '买入价' }, { k: 'sell', label: '卖出价' },
+      ]) + (d.failed && d.failed.length ? `<p class="hint">未挂牌：${d.failed.map(f => esc(f.currency + ' ' + f.reason)).join('；')}</p>` : ''),
     },
     {
       code: 'UC-303', name: '外汇买卖确认', method: 'POST', path: '/api/forex/trade',

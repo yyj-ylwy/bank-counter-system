@@ -107,6 +107,7 @@ P_CC_LIMIT_MAX = "CC_CREDIT_LIMIT_MAX"          # 信用卡授信额度上限
 P_CC_MIN_REPAY_RATE = "CC_MIN_REPAY_RATE"       # 最低还款比例
 P_CC_CASH_FEE_RATE = "CC_CASH_ADVANCE_FEE_RATE" # 预借现金手续费率
 P_CC_CASH_DAILY_LIMIT = "CC_CASH_DAILY_LIMIT"   # 预借现金单日限额
+P_FX_SPREAD = "FX_SPREAD"                       # 外汇挂牌点差（买卖各偏离中间价的比例，如 0.003=0.3%）
 
 # 证件类型
 ID_TYPES = ["身份证", "护照", "港澳通行证", "军官证"]
@@ -121,11 +122,11 @@ TEXT_MAX = 200                  # 备注/原因等自由文本长度上限
 ALLOWED_PARAM_KEYS = (
     {k for pair in PARAM_FX.values() for k in pair}
     | {P_LOAN_RATE, P_LOAN_OVERDUE_RATE, P_WITHDRAW_DAILY_LIMIT, P_TRANSFER_FEE_RATE,
-       P_CC_LIMIT_MAX, P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_CC_CASH_DAILY_LIMIT}
+       P_CC_LIMIT_MAX, P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_CC_CASH_DAILY_LIMIT, P_FX_SPREAD}
 )
 # 属于"比例/费率"的参数键（业务上应落在 0~1），维护时额外做上限校验
 RATE_PARAM_KEYS = {P_LOAN_RATE, P_LOAN_OVERDUE_RATE, P_TRANSFER_FEE_RATE,
-                   P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE}
+                   P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_FX_SPREAD}
 
 # ---- 状态/类型的中文标签（前端展示用）----
 ACCOUNT_STATUS_LABEL = {1: "正常", 2: "挂失", 3: "冻结", 4: "销户"}
