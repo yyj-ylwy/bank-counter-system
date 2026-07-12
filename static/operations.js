@@ -149,7 +149,7 @@ const OPERATIONS = {
         { n: 'name', label: '变更姓名（重要信息）', hint: '修改姓名/证件号须勾选下方“二次确认”' }, { n: 'new_id_no', label: '变更证件号（重要信息）' },
         { n: 'confirm', label: '二次确认关键信息变更', type: 'checkbox' }, { n: 'reason', label: '变更原因' },
       ],
-      result: d => kv({ '客户号': d.customer.customer_no, '姓名': d.customer.name, '手机号': d.customer.phone, '地址': d.customer.address || '-' }),
+      result: d => '<h4>客户信息（更新后）</h4>' + kv({ '客户号': d.customer.customer_no, '姓名': d.customer.name, '证件类型': d.customer.id_type || '-', '证件号': d.customer.id_no, '邮箱': d.customer.email || '-', '手机号': d.customer.phone || '-', '联系地址': d.customer.address || '-', '职业': d.customer.occupation || '-', '客户状态': d.customer.status_label }),
     },
   ],
 
