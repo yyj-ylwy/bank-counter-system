@@ -82,10 +82,12 @@ def _fetch_mid_raw(currency):
     q = urllib.parse.urlencode({"function": "CURRENCY_EXCHANGE_RATE", "from_currency": currency,
                                 "to_currency": "CNY", "apikey": config.ALPHAVANTAGE_API_KEY})
     try:
-        with urllib.request.urlopen("https://www.alphavantage.co/query?" + q, timeout=6) as resp:
+        req = urllib.request.Request("https://www.alphavantage.co/query?" + q,
+                                     headers={"User-Agent": "Mozilla/5.0"})  # 带 UA，避免被判爬虫
+        with urllib.request.urlopen(req, timeout=10) as resp:
             text = resp.read().decode("utf-8")
     except Exception as e:  # noqa: BLE001  网络/超时等
-        return None, f"行情服务连接失败：{e}"
+        return None, f"AV连接失败：{type(e).__name__}:{e}"
     return parse_av(text)
 
 
@@ -131,14 +133,16 @@ def refresh_rates(db, currency):
     spread = get_param_dec(db, C.P_FX_SPREAD, "0.003")
     mid, info = _fetch_mid_raw(currency)  # 主源：AV 实时（单币种）
     src = info
+    av_err = None
     if mid is None:  # AV 失败/限流 → er-api 兜底（按日参考价）
+        av_err = info
         er_mids, er_asof, er_err = _fetch_all_mids_erapi()
         if currency in er_mids:
             mid, src = er_mids[currency], f"参考价·{er_asof}"
         else:
             return None, (er_err or info or "行情暂不可用"), False
     buy, sell = quote_from_mid(mid, spread)
-    rec = {"mid": D6(mid), "buy": buy, "sell": sell, "as_of": src, "ts": now_m}
+    rec = {"mid": D6(mid), "buy": buy, "sell": sell, "as_of": src, "ts": now_m, "av_err": av_err}
     _rate_cache[currency] = rec
     return rec, None, False
 
@@ -173,6 +177,7 @@ def live_rate():
     return ok({"rates": [{"currency": cur, "mid": float(r["mid"]), "buy": float(r["buy"]),
                           "sell": float(r["sell"]), "as_of": r["as_of"]}],
                "from_cache": cached, "cache_ttl_min": _RATE_TTL // 60,
+               "av_err": r.get("av_err"),  # 诊断：AV 失败原因（为空表示走了 AV 实时）
                "note": "买入价=银行买入(客户卖出)、卖出价=银行卖出(客户买入)；来自 Alpha Vantage 实时行情，按币种缓存 30 分钟。外汇买卖即按此牌价换算。"})
 
 
