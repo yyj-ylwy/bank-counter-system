@@ -20,4 +20,4 @@ TOKEN_MAX_AGE = int(os.environ.get("TOKEN_MAX_AGE", 8 * 3600))
 
 # Alpha Vantage 实时汇率：默认内置一个可用 Key，开箱即用；如需替换在环境变量 ALPHAVANTAGE_API_KEY 覆盖即可。
 # 注意：为免费额度 Key（约 25 次/天，无计费、无敏感权限），失效可在 alphavantage.co 免费重新申请。
-ALPHAVANTAGE_API_KEY = os.environ.get("ALPHAVANTAGE_API_KEY", "QK4RDFO3T79612H3")
+ALPHAVANTAGE_API_KEY = os.environ.get("ALPHAVANTAGE_API_KEY", "5NO8Q9ZGYXB5D23V")
