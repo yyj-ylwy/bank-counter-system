@@ -121,7 +121,7 @@ def quote_from_mid(mid, spread):
 
 
 def refresh_rates(db):
-    """确保牌价新鲜：优先用内存缓存，缓存过期才拉取。主源 er-api 一次取全部币种；缺的再用 AV 兜底。
+    """确保牌价新鲜：优先用内存缓存，缓存过期才拉取。主源 Alpha Vantage 实时（逐币种）；限流/失败的用 er-api 兜底。
     集齐全部币种后缓存 30 分钟；未集齐时 60 秒即可重试。返回 (rates_dict, failed[(cur,reason)], from_cache_bool)。"""
     global _rates_attempt_at
     now_m = time.monotonic()
@@ -131,17 +131,23 @@ def refresh_rates(db):
         return _rates, [], True
     _rates_attempt_at = now_m
     spread = get_param_dec(db, C.P_FX_SPREAD, "0.003")
-    mids, as_of, err = _fetch_all_mids_erapi()  # 主源：一次拉全部
     failed = []
+    got = {}
+    # 主源：Alpha Vantage 实时（逐币种），确保拿到当日最新行情，避免只显示昨天的参考价
     for c in C.SUPPORTED_CURRENCIES:
-        mid = mids.get(c)
-        src = as_of
-        if mid is None:  # 主源缺该币种 → Alpha Vantage 逐个兜底
-            mid, info = _fetch_mid_raw(c)
-            src = info
-            if mid is None:
-                failed.append((c, err or info))
-                continue
+        mid, info = _fetch_mid_raw(c)
+        if mid is not None:
+            got[c] = (mid, info)
+    # 兜底：AV 失败/限流的币种，用 er-api 一次全量补齐（参考价，按日更新）
+    missing = [c for c in C.SUPPORTED_CURRENCIES if c not in got]
+    if missing:
+        er_mids, er_asof, er_err = _fetch_all_mids_erapi()
+        for c in missing:
+            if c in er_mids:
+                got[c] = (er_mids[c], f"参考价·{er_asof}")
+            else:
+                failed.append((c, er_err or "行情暂不可用"))
+    for c, (mid, src) in got.items():
         buy, sell = quote_from_mid(mid, spread)
         _rates[c] = {"mid": D6(mid), "buy": buy, "sell": sell, "as_of": src}
     return _rates, failed, False
@@ -168,7 +174,6 @@ def live_rate():
     rates, failed, cached = refresh_rates(db)
     fmap = dict(failed)
     cur = (request.args.get("currency") or "").strip().upper()
-    direction = (request.args.get("direction") or "").strip().upper()  # 可选 BUY/SELL：给出本次适用价
     wanted = [cur] if cur else list(C.SUPPORTED_CURRENCIES)
     rows = []
     for c in wanted:
@@ -177,15 +182,11 @@ def live_rate():
         r = rates.get(c)
         if not r:
             rows.append({"currency": c, "error": fmap.get(c, "行情暂不可用")}); continue
-        row = {"currency": c, "mid": float(r["mid"]), "buy": float(r["buy"]),
-               "sell": float(r["sell"]), "as_of": r["as_of"]}
-        if direction in ("BUY", "SELL"):  # 客户买入外币用卖出价、卖出外币用买入价
-            row["apply_rate"] = float(r["sell"]) if direction == "BUY" else float(r["buy"])
-            row["apply_rate_type"] = "SELL" if direction == "BUY" else "BUY"
-        rows.append(row)
+        rows.append({"currency": c, "mid": float(r["mid"]), "buy": float(r["buy"]),
+                     "sell": float(r["sell"]), "as_of": r["as_of"]})
     write_audit(db, user_id=g.user["_id"], action="FX_RATE_QUERY", object_type="system_param",
                 object_id=cur or "ALL", result=C.RESULT_SUCCESS,
-                detail={"currency": cur or "ALL", "direction": direction or None, "from_cache": cached})
+                detail={"currency": cur or "ALL", "from_cache": cached})
     return ok({"rates": rows, "from_cache": cached, "cache_ttl_min": _RATE_TTL // 60,
                "note": "买入价=银行买入(客户卖出)、卖出价=银行卖出(客户买入)；牌价来自实时行情，全部币种一次拉齐并缓存 30 分钟，期间不再调用行情接口。外汇买卖即按此实时牌价换算。"})
 
@@ -298,7 +299,8 @@ def trade():
                     object_id=fx_no, result=C.RESULT_SUCCESS,
                     detail={"foreign": str(foreign), "currency": fxa["currency"],
                             "rate": str(r), "cny": str(cny)}, session=s)
-        return {"cny_amount": float(cny), "rate": float(r), "rate_type": rtype,
+        return {"cny_amount": float(cny), "foreign": float(foreign), "currency": fxa["currency"],
+                "direction": direction, "rate": float(r), "rate_type": rtype,
                 "txn": txn_view(t)}, None
 
     res, err = run_in_transaction(txn)
@@ -312,22 +314,23 @@ def trade():
 @clerk
 def change():
     d = _body()
-    fx_no = (d.get("fx_account_no") or "").strip()
-    ctype = (d.get("change_type") or "").strip().upper()  # FREEZE/UNFREEZE/CLOSE/REBIND
-    new_no = (d.get("new_base_account_no") or "").strip()
+    ctype = (d.get("change_type") or "").strip().upper()  # FREEZE/UNFREEZE/CLOSE
+    ident = (d.get("ident") or "").strip()   # 任意身份标识（证件号/邮箱/手机号/外汇子户号）
+    currency = (d.get("currency") or "").strip().upper()
     db = get_db()
-    fx = db.fx_account.find_one({"fx_account_no": fx_no})
-    if not fx:  # E-1
-        return fail("E-1", "外汇子户不存在，请重新输入")
-    if fx["status"] == C.FX_CLOSED:  # 关闭是终态，不能再变更
-        return fail("E-CLOSED", "外汇子户已关闭，不能再变更")
-    if ctype not in ("FREEZE", "UNFREEZE", "CLOSE", "REBIND"):
-        return fail("E-OP", "变更类型非法（FREEZE/UNFREEZE/CLOSE/REBIND）", 400)
+    if ctype not in ("FREEZE", "UNFREEZE", "CLOSE"):
+        return fail("E-OP", "变更类型非法（冻结/解冻/注销）", 400)
+    fx, ferr = resolve_fx_account(db, ident, currency, d.get("fx_account_no"))  # 凭任意身份标识定位并核验归属
+    if ferr:
+        return fail(ferr[0], ferr[1])
+    fx_no = fx["fx_account_no"]
+    if fx["status"] == C.FX_CLOSED:  # 注销是终态，不能再变更
+        return fail("E-CLOSED", "外汇账户已注销，不能再变更")
 
     def txn(s):
-        f = db.fx_account.find_one({"_id": fx["_id"]}, session=s)  # 事务内重读，防并发（如关闭校验后被 trade 充值）
+        f = db.fx_account.find_one({"_id": fx["_id"]}, session=s)  # 事务内重读，防并发（如注销校验后被 trade 充值）
         if f["status"] == C.FX_CLOSED:
-            return None, ("E-CLOSED", "外汇子户已关闭，不能再变更")
+            return None, ("E-CLOSED", "外汇账户已注销，不能再变更")
         updates = {}
         if ctype == "FREEZE":
             if f["status"] != C.FX_NORMAL:
@@ -337,16 +340,10 @@ def change():
             if f["status"] != C.FX_FROZEN:
                 return None, ("E-STATE", "仅冻结状态可解冻")
             updates["status"] = C.FX_NORMAL
-        elif ctype == "CLOSE":
-            if dec(f["balance"]) != 0:  # E-2 事务内重读余额，避免并发充值后仍被关闭
-                return None, ("E-2", f"子户仍有余额 {dec(f['balance'])}，请先结清后再关闭")
+        else:  # CLOSE 注销
+            if dec(f["balance"]) != 0:  # 事务内重读余额，避免并发充值后仍被注销
+                return None, ("E-2", f"账户仍有余额 {dec(f['balance'])}，请先结清后再注销")
             updates["status"] = C.FX_CLOSED
-        else:  # REBIND
-            new_acc = db.account.find_one({"account_no": new_no}, session=s)
-            if (not new_acc or new_acc["customer_id"] != f["customer_id"]
-                    or new_acc["status"] != C.ACCOUNT_NORMAL or new_acc.get("card_status") == C.CARD_LOST):
-                return None, ("E-3", "新关联账户不存在、状态异常/已挂失或不属于该客户")
-            updates["base_account_id"] = new_acc["_id"]
         db.fx_account.update_one({"_id": f["_id"]}, {"$set": updates}, session=s)
         write_audit(db, user_id=g.user["_id"], action=f"FX_{ctype}", object_type="fx_account",
                     object_id=fx_no, result=C.RESULT_SUCCESS,
