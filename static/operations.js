@@ -231,9 +231,9 @@ const OPERATIONS = {
     {
       code: 'UC-306', name: '实时汇率查询', method: 'GET', path: '/api/forex/live-rate',
       fields: [
-        { n: 'currency', label: '币种', type: 'select', options: [{ value: '', label: '全部币种' }].concat(CURRENCIES) },
+        { n: 'currency', label: '币种', type: 'select', options: CURRENCIES, required: true },
       ],
-      hint: '实时行情牌价（买入价/卖出价一并显示）。外汇买卖即按此牌价换算',
+      hint: '选择币种查询其实时行情（Alpha Vantage 实时；买入价/卖出价一并显示）。外汇买卖即按此牌价换算',
       result: d => tbl(d.rates, [
         { k: 'currency', label: '币种' }, { k: 'mid', label: '实时中间价' },
         { k: 'buy', label: '买入价(客户卖出)' }, { k: 'sell', label: '卖出价(客户买入)' },

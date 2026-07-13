@@ -53,10 +53,8 @@ def fx_view(fx, cust=None, base=None):
 # 缓存：任一功能(汇率查询/买卖/挂牌)需要牌价时，若已集齐全部币种且距上次拉取 < 30 分钟则直接用内存缓存、不调 API；
 #   若上次未集齐(主源临时故障)，60 秒即可重试，直至集齐后再进入 30 分钟缓存。UC-302 查单币种也命中同一缓存。
 _ER_API = "https://open.er-api.com/v6/latest/CNY"
-_rates = {}              # currency -> {"mid":Decimal, "buy":Decimal, "sell":Decimal, "as_of":str}
-_rates_attempt_at = 0.0  # 上次“尝试拉取”的 monotonic 时刻
-_RATE_TTL = 1800         # 集齐后缓存/节流窗口：30 分钟
-_RETRY_GAP = 60          # 未集齐时的重试最小间隔：60 秒
+_rate_cache = {}         # currency -> {"mid","buy","sell","as_of","ts"(monotonic)}；按币种独立缓存
+_RATE_TTL = 1800         # 每币种缓存窗口：30 分钟
 
 
 def parse_av(text):
@@ -120,37 +118,29 @@ def quote_from_mid(mid, spread):
     return buy, sell
 
 
-def refresh_rates(db):
-    """确保牌价新鲜：优先用内存缓存，缓存过期才拉取。主源 Alpha Vantage 实时（逐币种）；限流/失败的用 er-api 兜底。
-    集齐全部币种后缓存 30 分钟；未集齐时 60 秒即可重试。返回 (rates_dict, failed[(cur,reason)], from_cache_bool)。"""
-    global _rates_attempt_at
+def refresh_rates(db, currency):
+    """取单个币种的实时牌价：Alpha Vantage 实时（1 次调用，不触发批量限流）；失败则 er-api 兜底。
+    按币种缓存 30 分钟。返回 (rate_dict{mid,buy,sell,as_of} 或 None, error 或 None, from_cache_bool)。"""
+    currency = (currency or "").strip().upper()
+    if currency not in C.PARAM_FX:
+        return None, "不支持的币种", False
     now_m = time.monotonic()
-    complete = bool(_rates) and all(c in _rates for c in C.SUPPORTED_CURRENCIES)
-    gap = _RATE_TTL if complete else _RETRY_GAP  # 已集齐→30分钟；未集齐→60秒即重试
-    if _rates_attempt_at and (now_m - _rates_attempt_at) < gap:
-        return _rates, [], True
-    _rates_attempt_at = now_m
+    cached = _rate_cache.get(currency)
+    if cached and (now_m - cached["ts"]) < _RATE_TTL:
+        return cached, None, True
     spread = get_param_dec(db, C.P_FX_SPREAD, "0.003")
-    failed = []
-    got = {}
-    # 主源：Alpha Vantage 实时（逐币种），确保拿到当日最新行情，避免只显示昨天的参考价
-    for c in C.SUPPORTED_CURRENCIES:
-        mid, info = _fetch_mid_raw(c)
-        if mid is not None:
-            got[c] = (mid, info)
-    # 兜底：AV 失败/限流的币种，用 er-api 一次全量补齐（参考价，按日更新）
-    missing = [c for c in C.SUPPORTED_CURRENCIES if c not in got]
-    if missing:
+    mid, info = _fetch_mid_raw(currency)  # 主源：AV 实时（单币种）
+    src = info
+    if mid is None:  # AV 失败/限流 → er-api 兜底（按日参考价）
         er_mids, er_asof, er_err = _fetch_all_mids_erapi()
-        for c in missing:
-            if c in er_mids:
-                got[c] = (er_mids[c], f"参考价·{er_asof}")
-            else:
-                failed.append((c, er_err or "行情暂不可用"))
-    for c, (mid, src) in got.items():
-        buy, sell = quote_from_mid(mid, spread)
-        _rates[c] = {"mid": D6(mid), "buy": buy, "sell": sell, "as_of": src}
-    return _rates, failed, False
+        if currency in er_mids:
+            mid, src = er_mids[currency], f"参考价·{er_asof}"
+        else:
+            return None, (er_err or info or "行情暂不可用"), False
+    buy, sell = quote_from_mid(mid, spread)
+    rec = {"mid": D6(mid), "buy": buy, "sell": sell, "as_of": src, "ts": now_m}
+    _rate_cache[currency] = rec
+    return rec, None, False
 
 
 def read_rate(db, currency, direction):
@@ -158,8 +148,7 @@ def read_rate(db, currency, direction):
     返回 (rate, rate_type) 或 (None, None)。牌价来自 30 分钟实时缓存。"""
     if currency not in C.PARAM_FX:
         return None, None
-    refresh_rates(db)
-    r = _rates.get(currency)
+    r, _err, _c = refresh_rates(db, currency)  # 单币种向 AV 实时拉取
     if not r:
         return None, None
     return (r["sell"], "SELL") if direction == "BUY" else (r["buy"], "BUY")
@@ -171,24 +160,20 @@ def read_rate(db, currency, direction):
 @clerk
 def live_rate():
     db = get_db()
-    rates, failed, cached = refresh_rates(db)
-    fmap = dict(failed)
     cur = (request.args.get("currency") or "").strip().upper()
-    wanted = [cur] if cur else list(C.SUPPORTED_CURRENCIES)
-    rows = []
-    for c in wanted:
-        if c not in C.PARAM_FX:
-            rows.append({"currency": c, "error": "不支持的币种"}); continue
-        r = rates.get(c)
-        if not r:
-            rows.append({"currency": c, "error": fmap.get(c, "行情暂不可用")}); continue
-        rows.append({"currency": c, "mid": float(r["mid"]), "buy": float(r["buy"]),
-                     "sell": float(r["sell"]), "as_of": r["as_of"]})
+    if not cur:
+        return fail("E-CUR", "请选择要查询的币种", 400)
+    if cur not in C.PARAM_FX:
+        return fail("E-CUR", "不支持的币种", 400)
+    r, err, cached = refresh_rates(db, cur)  # 单币种：AV 实时（不触发批量限流）
+    if not r:
+        return fail("E-1", f"{cur} 实时牌价暂不可用：{err}")
     write_audit(db, user_id=g.user["_id"], action="FX_RATE_QUERY", object_type="system_param",
-                object_id=cur or "ALL", result=C.RESULT_SUCCESS,
-                detail={"currency": cur or "ALL", "from_cache": cached})
-    return ok({"rates": rows, "from_cache": cached, "cache_ttl_min": _RATE_TTL // 60,
-               "note": "买入价=银行买入(客户卖出)、卖出价=银行卖出(客户买入)；牌价来自实时行情，全部币种一次拉齐并缓存 30 分钟，期间不再调用行情接口。外汇买卖即按此实时牌价换算。"})
+                object_id=cur, result=C.RESULT_SUCCESS, detail={"currency": cur, "from_cache": cached})
+    return ok({"rates": [{"currency": cur, "mid": float(r["mid"]), "buy": float(r["buy"]),
+                          "sell": float(r["sell"]), "as_of": r["as_of"]}],
+               "from_cache": cached, "cache_ttl_min": _RATE_TTL // 60,
+               "note": "买入价=银行买入(客户卖出)、卖出价=银行卖出(客户买入)；来自 Alpha Vantage 实时行情，按币种缓存 30 分钟。外汇买卖即按此牌价换算。"})
 
 
 # ---------- UC-301 外汇子户开立 ----------
