@@ -108,14 +108,20 @@ def ensure_indexes():
     db.customer.create_index([("customer_no", ASCENDING)], unique=True)
     db.customer.create_index([("id_no", ASCENDING)], unique=True)  # 证件号全局唯一
     db.customer.create_index([("email", ASCENDING)], unique=True, sparse=True)  # 邮箱唯一（仅对已登记邮箱的客户生效）
-    # 手机号唯一索引（仅对已填手机号生效）：
-    #  1) 旧库可能存在原来的非唯一/仅 sparse 的 phone_1，同名不同规格会冲突并中断建索引 → 先删旧的；
-    #  2) 手机号选填、未填时存空串""，sparse 只跳过缺失/null 不跳过""，会误判多个空手机号重复 →
-    #     用 partialFilterExpression {phone:{$gt:""}} 只对非空手机号建唯一约束。
-    if any(ix["name"] == "phone_1" for ix in db.customer.list_indexes()):
-        db.customer.drop_index("phone_1")
-    db.customer.create_index([("phone", ASCENDING)], unique=True,
-                             partialFilterExpression={"phone": {"$gt": ""}})
+    # 手机号索引（仅对已填手机号生效）：优先唯一约束(partialFilterExpression {phone:{$gt:""}} 只约束非空，
+    # 避免空串""被 sparse 误判重复)；但若生产库里已存在【重复手机号】导致唯一约束建不了，则退回非唯一索引，
+    # 保证按手机号查询仍走索引，并给出清理提示。整段包 try：任何失败都不中断后续 ensure_indexes 与 run_seed。
+    try:
+        if any(ix["name"] == "phone_1" for ix in db.customer.list_indexes()):
+            db.customer.drop_index("phone_1")
+        db.customer.create_index([("phone", ASCENDING)], unique=True,
+                                 partialFilterExpression={"phone": {"$gt": ""}})
+    except Exception as e:  # noqa: BLE001
+        print(f"[index] 手机号唯一索引建立失败(可能存在重复手机号，建议清理后再启用唯一)，暂用非唯一索引：{e}")
+        try:
+            db.customer.create_index([("phone", ASCENDING)])
+        except Exception:
+            pass
     db.account.create_index([("account_no", ASCENDING)], unique=True)
     db.account.create_index([("card_no", ASCENDING)], unique=True)
     # 客户↔账户 1:1：同一客户只能有一个在用（非销户）储蓄账户
