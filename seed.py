@@ -61,9 +61,10 @@ DEMO_CUSTOMERS = [
 def run_seed():
     db = get_db()
 
-    # --- 用户 ---
-    if db.user_account.count_documents({}) == 0:
-        for emp, name, role, pw in DEMO_USERS:
+    # --- 用户（逐个幂等：缺哪个补哪个，便于给已有库补上新增角色，如理财业务员 I001）---
+    created = 0
+    for emp, name, role, pw in DEMO_USERS:
+        if db.user_account.count_documents({"employee_no": emp}) == 0:
             db.user_account.insert_one({
                 "employee_no": emp,
                 "name": name,
@@ -72,7 +73,9 @@ def run_seed():
                 "status": C.USER_ACTIVE,
                 "created_at": now(),
             })
-        print(f"[seed] 已创建 {len(DEMO_USERS)} 个演示用户")
+            created += 1
+    if created:
+        print(f"[seed] 已创建 {created} 个演示用户")
 
     admin = db.user_account.find_one({"role": C.ROLE_ADMIN})
     admin_id = admin["_id"] if admin else None
