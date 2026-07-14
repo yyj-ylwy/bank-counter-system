@@ -413,7 +413,7 @@ const OPERATIONS = {
       code: 'UC-501b', name: '新建用户', method: 'POST', path: '/api/admin/users',
       fields: [
         { n: 'employee_no', label: '工号', required: true }, { n: 'name', label: '姓名', required: true },
-        { n: 'role', label: '角色', type: 'select', options: [{ value: 'SAVINGS_CLERK', label: '储蓄业务员' }, { value: 'LOAN_CLERK', label: '贷款业务员' }, { value: 'FOREX_CLERK', label: '外汇业务员' }, { value: 'CREDIT_CARD_CLERK', label: '信用卡业务员' }, { value: 'ADMIN', label: '系统管理员' }] },
+        { n: 'role', label: '角色', type: 'select', options: [{ value: 'SAVINGS_CLERK', label: '储蓄业务员' }, { value: 'LOAN_CLERK', label: '贷款业务员' }, { value: 'FOREX_CLERK', label: '外汇业务员' }, { value: 'CREDIT_CARD_CLERK', label: '信用卡业务员' }, { value: 'INVEST_CLERK', label: '理财业务员' }, { value: 'ADMIN', label: '系统管理员' }] },
         { n: 'password', label: '初始密码', type: 'password', required: true },
       ],
       result: d => kv({ '工号': d.user.employee_no, '姓名': d.user.name, '角色': d.user.role_label }),
@@ -422,7 +422,7 @@ const OPERATIONS = {
       code: 'UC-501c', name: '修改/停用用户', method: 'POST', path: '/api/admin/users/update',
       fields: [
         { n: 'employee_no', label: '工号', required: true }, { n: 'name', label: '新姓名' },
-        { n: 'role', label: '新角色', type: 'select', options: [{ value: '', label: '不变' }, { value: 'SAVINGS_CLERK', label: '储蓄业务员' }, { value: 'LOAN_CLERK', label: '贷款业务员' }, { value: 'FOREX_CLERK', label: '外汇业务员' }, { value: 'CREDIT_CARD_CLERK', label: '信用卡业务员' }, { value: 'ADMIN', label: '系统管理员' }] },
+        { n: 'role', label: '新角色', type: 'select', options: [{ value: '', label: '不变' }, { value: 'SAVINGS_CLERK', label: '储蓄业务员' }, { value: 'LOAN_CLERK', label: '贷款业务员' }, { value: 'FOREX_CLERK', label: '外汇业务员' }, { value: 'CREDIT_CARD_CLERK', label: '信用卡业务员' }, { value: 'INVEST_CLERK', label: '理财业务员' }, { value: 'ADMIN', label: '系统管理员' }] },
         { n: 'status', label: '状态', type: 'select', options: [{ value: '', label: '不变' }, { value: '1', label: '启用' }, { value: '0', label: '停用' }] },
         { n: 'password', label: '重置密码', type: 'password' },
       ],
