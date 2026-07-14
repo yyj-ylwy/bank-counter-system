@@ -2,11 +2,15 @@
 
 设计为幂等：已存在则跳过，可安全地在每次启动时调用。
 """
+from datetime import timedelta
+
+from bson.decimal128 import Decimal128
 from werkzeug.security import generate_password_hash
 
 import constants as C
 from db import get_db
-from common import (m, D, now, write_txn, new_customer_no, new_account_no, new_debit_card_no)
+from common import (m, D, D6, now, write_txn, new_customer_no, new_account_no, new_debit_card_no)
+from invest import m4, D4
 
 # 演示账号（README 里公布）。生产环境请让管理员改密码。
 DEMO_USERS = [
@@ -15,7 +19,24 @@ DEMO_USERS = [
     ("L001", "贷款业务员小贷", C.ROLE_LOAN, "123456"),
     ("F001", "外汇业务员小汇", C.ROLE_FOREX, "123456"),
     ("CC001", "信用卡业务员小信", C.ROLE_CREDIT, "123456"),
+    ("I001", "理财业务员小理", C.ROLE_INVEST, "123456"),
 ]
+
+# 演示理财产品：(产品代码=行情代码, 名称, 类型, 计价币种, 风险等级)
+INVEST_PRODUCTS = [
+    ("000198", "天弘余额宝货币", "FUND", "CNY", 1),
+    ("110020", "易方达沪深300ETF联接A", "FUND", "CNY", 3),
+    ("000001", "华夏成长混合", "FUND", "CNY", 4),
+    ("AAPL", "苹果公司(美股)", "STOCK", "USD", 5),
+]
+# 演示历史行情（本币价，key=距今天数）：让持仓的日/周/月/年价格变动有数据可算（离线可跑）
+_FX_SEED = "7.2000"  # 美股 USD→CNY 演示汇率
+INVEST_PRICE_SEED = {
+    "000198": {365: "1.0000", 30: "1.0000", 7: "1.0000", 1: "1.0000", 0: "1.0000"},
+    "110020": {365: "1.1000", 30: "1.3500", 7: "1.4200", 1: "1.4500", 0: "1.4800"},
+    "000001": {365: "1.2000", 30: "1.4000", 7: "1.4500", 1: "1.4800", 0: "1.5000"},
+    "AAPL": {365: "180.00", 30: "195.00", 7: "198.00", 1: "199.00", 0: "200.00"},
+}
 
 # 系统参数默认值（管理员可在系统管理里修改，无需改代码）
 DEFAULT_PARAMS = [
@@ -96,3 +117,46 @@ def run_seed():
             write_txn(db, business_type=C.TXN_OPEN, amount=D(balance), user_id=admin_id,
                       customer_id=cid, account_id=aid)
         print(f"[seed] 已创建 {len(DEMO_CUSTOMERS)} 个演示客户及账户")
+
+    # --- 演示理财产品 + 历史行情 + 客户风险等级/持仓 ---
+    if db.invest_product.count_documents({}) == 0:
+        for code, name, ptype, currency, risk in INVEST_PRODUCTS:
+            db.invest_product.insert_one({
+                "code": code, "name": name, "ptype": ptype, "market_symbol": code,
+                "currency": currency, "risk_level": risk,
+                "source": "ttjj" if ptype == "FUND" else "av",
+                "status": C.INVEST_PRODUCT_ACTIVE, "created_at": now()})
+        _seed_prices(db)
+        _seed_holdings(db)
+        print(f"[seed] 已创建 {len(INVEST_PRODUCTS)} 个演示理财产品及历史行情")
+
+
+def _seed_prices(db):
+    """写演示历史行情：外币产品按 _FX_SEED 折 CNY。(product_code,date) 唯一，幂等。"""
+    for code, series in INVEST_PRICE_SEED.items():
+        prod = db.invest_product.find_one({"code": code})
+        is_usd = prod["currency"] != "CNY"
+        for days, price in series.items():
+            date = (now().date() - timedelta(days=days)).strftime("%Y%m%d")
+            local = D4(price)
+            price_cny = D4(local * D(_FX_SEED)) if is_usd else local
+            fx = D6(_FX_SEED) if is_usd else D6(1)
+            db.invest_price.update_one({"product_code": code, "date": date}, {"$set": {
+                "product_code": code, "date": date, "price_local": m4(local),
+                "currency": prod["currency"], "price_cny": m4(price_cny),
+                "fx_rate": Decimal128(fx), "source": prod["source"],
+                "as_of": "seed", "created_at": now()}}, upsert=True)
+
+
+def _seed_holdings(db):
+    """给演示客户设风险等级；张三持有一笔华夏成长混合（500份/成本700，现价1.50→浮盈50）。"""
+    zhang = db.customer.find_one({"id_no": "110101199001011234"})
+    li = db.customer.find_one({"id_no": "110101199203054321"})
+    if zhang:
+        db.customer.update_one({"_id": zhang["_id"]}, {"$set": {"invest_risk_level": 4, "invest_risk_at": now()}})
+        db.invest_holding.update_one({"customer_id": zhang["_id"], "product_code": "000001"}, {"$set": {
+            "customer_id": zhang["_id"], "product_code": "000001",
+            "units": m4(500), "remaining_cost_cny": m(700), "realized_pnl_cny": m(0),
+            "created_at": now()}}, upsert=True)
+    if li:
+        db.customer.update_one({"_id": li["_id"]}, {"$set": {"invest_risk_level": 2, "invest_risk_at": now()}})

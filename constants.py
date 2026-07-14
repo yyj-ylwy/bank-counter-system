@@ -8,15 +8,17 @@ ROLE_SAVINGS = "SAVINGS_CLERK"       # 储蓄业务员
 ROLE_LOAN = "LOAN_CLERK"             # 贷款业务员
 ROLE_FOREX = "FOREX_CLERK"           # 外汇业务员
 ROLE_CREDIT = "CREDIT_CARD_CLERK"    # 信用卡业务员
+ROLE_INVEST = "INVEST_CLERK"         # 理财业务员
 ROLE_ADMIN = "ADMIN"                 # 系统管理员
 
-ALL_ROLES = [ROLE_SAVINGS, ROLE_LOAN, ROLE_FOREX, ROLE_CREDIT, ROLE_ADMIN]
+ALL_ROLES = [ROLE_SAVINGS, ROLE_LOAN, ROLE_FOREX, ROLE_CREDIT, ROLE_INVEST, ROLE_ADMIN]
 
 ROLE_LABELS = {
     ROLE_SAVINGS: "储蓄业务员",
     ROLE_LOAN: "贷款业务员",
     ROLE_FOREX: "外汇业务员",
     ROLE_CREDIT: "信用卡业务员",
+    ROLE_INVEST: "理财业务员",
     ROLE_ADMIN: "系统管理员",
 }
 
@@ -82,6 +84,8 @@ TXN_CC_REPAY = "CC_REPAY"               # 信用卡还款
 TXN_CC_CASH = "CC_CASH_ADVANCE"         # 预借现金
 TXN_CC_CASH_FEE = "CC_CASH_FEE"         # 预借现金手续费
 TXN_CC_CASH_PAYOUT = "CC_CASH_PAYOUT"   # 预借现金转入储蓄账户（账户侧入账流水）
+TXN_INVEST_BUY = "INVEST_BUY"           # 理财申购（买入，扣储蓄账户）
+TXN_INVEST_SELL = "INVEST_SELL"         # 理财赎回（卖出，入储蓄账户）
 
 TXN_STATUS_SUCCESS = 1
 TXN_STATUS_FAIL = 0
@@ -156,4 +160,14 @@ TXN_TYPE_LABEL = {
     "LOAN_DISBURSE": "放款", "LOAN_REPAY": "贷款还款", "FX_BUY": "买入外币",
     "FX_SELL": "卖出外币", "CC_REPAY": "信用卡还款", "CC_CASH_ADVANCE": "预借现金",
     "CC_CASH_FEE": "预借现金手续费", "CC_CASH_PAYOUT": "预借现金入账",
+    "INVEST_BUY": "理财申购", "INVEST_SELL": "理财赎回",
 }
+
+# ============ 投资理财 ============
+INVEST_PRODUCT_ACTIVE = 1
+INVEST_PRODUCT_OFF = 0
+INVEST_PRODUCT_STATUS_LABEL = {1: "在售", 0: "停售"}
+INVEST_PTYPE_LABEL = {"FUND": "基金", "STOCK": "股票"}      # 价格源：FUND=天天基金(CNY)，STOCK=美股(USD,折CNY)
+INVEST_SOURCE_LABEL = {"ttjj": "天天基金", "av": "AlphaVantage"}
+RISK_LEVEL_LABEL = {1: "低", 2: "中低", 3: "中", 4: "中高", 5: "高"}  # 产品风险等级 & 客户风险承受等级
+INVEST_PRICE_STALE_MAX_DAYS = 7   # 成交价最多允许旧 7 天；再旧则拒绝买卖（不能用陈价成交）

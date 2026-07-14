@@ -1,0 +1,116 @@
+"""投资理财模块端到端测试（独立自足，按当前 ident 身份标识 API 编写）。
+
+覆盖：产品列表/实时行情、风险测评与适配、基金/股票申购(含货币换算)、赎回(部分/全部/超卖/无持仓)、
+      持仓盈亏(累计 + 日/周/月/年价格变动)、管理员产品维护。
+用 seed 写入的当日行情，不走外网。使用一次性库 bank_invest_test，测完自动删除。
+运行：python test_invest.py
+"""
+import os
+os.environ.setdefault("DB_NAME", "bank_invest_test")
+
+from app import create_app
+from db import get_client
+
+app = create_app()
+cl = app.test_client()
+
+_p = _f = 0
+def ok(name, cond):
+    global _p, _f
+    if cond:
+        _p += 1; print(f"  PASS {name}")
+    else:
+        _f += 1; print(f"  FAIL {name}")
+
+def login(emp, pw):
+    return cl.post("/api/login", json={"employee_no": emp, "password": pw}).get_json()["data"]["token"]
+
+INV = login("I001", "123456"); AD = login("admin", "admin123"); S = login("S001", "123456")
+
+def api(method, path, tok, json=None, query=None):
+    h = {"Authorization": "Bearer " + tok}
+    r = cl.get(path, headers=h, query_string=query or {}) if method == "GET" else cl.post(path, headers=h, json=json or {})
+    return r.get_json() or {}
+
+def E(r): return r.get("error")
+def OK(r): return r.get("success") is True
+
+_seq = [0]
+def uid():
+    _seq[0] += 1
+    return _seq[0]
+
+def open_acct(bal="0"):
+    """按当前开户 API（必填邮箱）建一个客户+账户，返回 {id_no, account_no}。"""
+    n = uid()
+    idn = "11010119910909" + f"{n:04d}"
+    r = api("POST", "/api/savings/open-account", S, json={
+        "name": f"理财客户{n}", "id_type": "身份证", "id_no": idn,
+        "email": f"inv{n}@test.example.com", "initial_balance": bal})
+    assert r.get("success"), r
+    return {"id_no": idn, "account_no": r["data"]["account"]["account_no"]}
+
+
+def run():
+    print("== 投资理财 UC-601~607 ==")
+    # 产品/行情（用 seed 的当日价，不走网络）
+    ok("601 产品列表 [正常流]", OK(api("GET", "/api/invest/products", INV)))
+    q = api("GET", "/api/invest/quote", INV, query={"product_code": "000001"})
+    ok("602 实时行情(华夏成长混合,当日1.5) [正常流]", OK(q) and abs(q["data"]["price_cny"] - 1.5) < 0.001)
+    ok("602 产品不存在→E-NOPROD [判定]", E(api("GET", "/api/invest/quote", INV, query={"product_code": "ZZZ"})) == "E-NOPROD")
+
+    c = open_acct(bal="100000")
+    ok("605 未测评申购→E-RISK [判定]", E(api("POST", "/api/invest/buy", INV, json={"ident": c["id_no"], "product_code": "000001", "amount": "1500"})) == "E-RISK")
+    ra = api("POST", "/api/invest/assess", INV, json={"ident": c["id_no"], "q1": "5", "q2": "5", "q3": "5", "q4": "5", "q5": "5"})
+    ok("604 风险测评→5级 [正常流]", OK(ra) and ra["data"]["risk_level"] == 5)
+
+    # 申购：1500 元 @ 净值1.50 → 1000 份
+    b = api("POST", "/api/invest/buy", INV, json={"ident": c["id_no"], "product_code": "000001", "amount": "1500"})
+    ok("605 申购成功(1500元→1000份) [正常流]", OK(b) and abs(b["data"]["units"] - 1000) < 0.001)
+    ok("605 申购超余额→E-BAL [边界]", E(api("POST", "/api/invest/buy", INV, json={"ident": c["id_no"], "product_code": "000001", "amount": "9999999"})) == "E-BAL")
+    ok("605 金额0→E-AMT [边界]", E(api("POST", "/api/invest/buy", INV, json={"ident": c["id_no"], "product_code": "000001", "amount": "0"})) == "E-AMT")
+    # 货币换算：AAPL 当日折 CNY = 200×7.2 = 1440；买 1440 元 → 1 份
+    aapl = api("POST", "/api/invest/buy", INV, json={"ident": c["id_no"], "product_code": "AAPL", "amount": "1440"})
+    ok("605 美股申购货币换算(1440元→1份) [组合]", OK(aapl) and abs(aapl["data"]["units"] - 1) < 0.001 and abs(aapl["data"]["price_cny"] - 1440) < 0.01)
+
+    # 持仓盈亏：总成本 = 1500 + 1440 = 2940
+    h = api("GET", "/api/invest/holdings", INV, query={"ident": c["id_no"]})
+    ok("607 持仓查询 [正常流]", OK(h) and abs(h["data"]["summary"]["total_cost"] - 2940) < 0.01)
+    row = next((x for x in h["data"]["holdings"] if x["code"] == "000001"), None)
+    ok("607 持仓含日/周/月/年价格变动 [组合]", row and row.get("year_pct") is not None)
+    ok("607 未测评客户无持仓查询→仍返回(空) [判定]", OK(api("GET", "/api/invest/holdings", INV, query={"ident": open_acct()["id_no"]})))
+
+    # 赎回：卖 500 份 @ 1.50 → 到账 750
+    s = api("POST", "/api/invest/sell", INV, json={"ident": c["id_no"], "product_code": "000001", "units": "500"})
+    ok("606 赎回500份→到账750 [正常流]", OK(s) and abs(s["data"]["proceeds"] - 750) < 0.01)
+    ok("606 超持仓赎回→E-UNITS [边界]", E(api("POST", "/api/invest/sell", INV, json={"ident": c["id_no"], "product_code": "000001", "units": "999999"})) == "E-UNITS")
+    ok("606 无持仓赎回→E-NOHOLD [判定]", E(api("POST", "/api/invest/sell", INV, json={"ident": c["id_no"], "product_code": "110020", "units": "1"})) == "E-NOHOLD")
+    ok("606 全部赎回成功 [边界]", OK(api("POST", "/api/invest/sell", INV, json={"ident": c["id_no"], "product_code": "000001", "all": True})))
+    # 全部赎回后再查：000001 份额应为 0
+    h2 = api("GET", "/api/invest/holdings", INV, query={"ident": c["id_no"]})
+    row2 = next((x for x in h2["data"]["holdings"] if x["code"] == "000001"), None)
+    ok("606 清仓后份额归零 [边界]", row2 is None or abs(row2["units"]) < 0.0001)
+
+    # 风险适配：测评2级客户买5级美股→E-RISK
+    c2 = open_acct(bal="10000")
+    api("POST", "/api/invest/assess", INV, json={"ident": c2["id_no"], "q1": "2", "q2": "2", "q3": "2", "q4": "2", "q5": "2"})
+    ok("605 风险不匹配(2级买5级股票)→E-RISK [条件]", E(api("POST", "/api/invest/buy", INV, json={"ident": c2["id_no"], "product_code": "AAPL", "amount": "1440"})) == "E-RISK")
+    ok("605 风险匹配(2级买1级货基)成功 [条件]", OK(api("POST", "/api/invest/buy", INV, json={"ident": c2["id_no"], "product_code": "000198", "amount": "1000"})))
+
+    # 权限：储蓄员不能调理财申购（角色隔离）
+    ok("权限 储蓄员调申购→403 [安全]", cl.post("/api/invest/buy", headers={"Authorization": "Bearer " + S}, json={"ident": c["id_no"], "product_code": "000198", "amount": "1"}).status_code == 403)
+
+    # 管理员维护产品
+    ok("508 管理员维护理财产品 [正常流]", OK(api("POST", "/api/invest/admin/product", AD, json={"code": "005827", "name": "易方达蓝筹精选", "ptype": "FUND", "market_symbol": "005827", "risk_level": "4", "status": "1"})))
+    ok("508 类型非法→E-REQ [判定]", E(api("POST", "/api/invest/admin/product", AD, json={"code": "X", "name": "x", "ptype": "BOND", "market_symbol": "x"})) == "E-REQ")
+    ok("508 理财员无权维护产品→403 [安全]", cl.post("/api/invest/admin/product", headers={"Authorization": "Bearer " + INV}, json={"code": "Y", "name": "y", "ptype": "FUND", "market_symbol": "y"}).status_code == 403)
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    finally:
+        get_client().drop_database("bank_invest_test")
+    print(f"\n==== 结果：{_p} 通过 / {_f} 失败（共 {_p + _f} 条断言）====")
+    import sys
+    sys.exit(1 if _f else 0)

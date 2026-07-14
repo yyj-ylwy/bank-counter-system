@@ -29,12 +29,15 @@ const ACTION_LABEL = {
   CC_EXCEPTION: '信用卡异常登记', CC_CARD: '信用卡卡片操作',
   USER_CREATE: '新建操作员', USER_UPDATE: '操作员信息变更', PARAM_UPDATE: '系统参数修改',
   BACKUP: '数据备份', RESTORE: '数据恢复', CHANGE_PASSWORD: '修改密码',
+  INVEST_BUY: '理财申购', INVEST_SELL: '理财赎回', INVEST_REFRESH: '理财行情刷新',
+  INVEST_ASSESS: '风险测评', INVEST_PRODUCT: '理财产品维护',
 };
 const OBJECT_LABEL = {
   account: '储蓄账户', customer: '客户', loan: '贷款', fx_account: '外汇账户',
   credit_card: '信用卡', credit_card_bill: '信用卡账单', user_account: '操作员账号',
   system_param: '系统参数', database: '数据库', audit_log: '审计日志',
   business_transaction: '业务流水', counters: '业务编号',
+  invest_product: '理财产品', invest_holding: '理财持仓',
 };
 const RESULT_LABEL = { SUCCESS: '成功', FAILURE: '失败' };
 const actionLabel = a => ACTION_LABEL[a] || a;
@@ -326,6 +329,79 @@ const OPERATIONS = {
     },
   ],
 
+  // ================= 理财业务员 =================
+  INVEST_CLERK: [
+    {
+      code: 'UC-601', name: '理财产品列表', method: 'GET', path: '/api/invest/products',
+      fields: [],
+      result: d => d.products.length ? tbl(d.products, [
+        { k: 'code', label: '代码' }, { k: 'name', label: '名称' }, { k: 'ptype_label', label: '类型' },
+        { k: 'risk_label', label: '风险' }, { k: 'currency', label: '币种' },
+        { k: 'price_cny', label: '最新净值/价(CNY)', fmt: v => v == null ? '-' : money(v) },
+        { k: 'price_date', label: '价格日期', fmt: v => v || '待刷新' },
+      ]) : `<p class="hint">${d.hint || '暂无产品'}</p>`,
+    },
+    {
+      code: 'UC-602', name: '实时行情查询', method: 'GET', path: '/api/invest/quote',
+      fields: [{ n: 'product_code', label: '产品代码', required: true, hint: '如 000001 / 110020 / 000198 / AAPL' }],
+      result: d => kv({ '产品': d.name + '（' + d.code + '）', '类型': d.ptype_label, '计价币种': d.currency, '本币价': d.price_local, '折CNY价': money(d.price_cny), '汇率': d.fx_rate, '行情日期': d.date + (d.stale ? '（非当日·参考）' : ''), '数据源': d.source_label })
+        + (d.stale ? '<p class="hint">当前为最近可得行情，非当日实时，可点「行情刷新」更新</p>' : ''),
+    },
+    {
+      code: 'UC-603', name: '行情刷新(每日)', method: 'POST', path: '/api/invest/refresh-prices',
+      fields: [],
+      hint: '拉取全部在售产品的当日行情（每天更新一次即可；查询时也会懒加载补当日价）',
+      result: d => `<p>${d.hint}</p>` + (d.updated.length ? tbl(d.updated, [{ k: 'code', label: '代码' }, { k: 'name', label: '名称' }, { k: 'price_cny', label: '当日价(CNY)', fmt: money }, { k: 'date', label: '日期' }]) : '')
+        + (d.failed && d.failed.length ? `<p class="hint">失败：${d.failed.map(f => esc(f.code + ' ' + (f.reason || ''))).join('；')}</p>` : ''),
+    },
+    {
+      code: 'UC-604', name: '风险测评', method: 'POST', path: '/api/invest/assess',
+      fields: [
+        { n: 'ident', label: '客户身份标识', required: true, hint: '证件号/邮箱/手机号/账号，任填其一' },
+        { n: 'q1', label: '1.投资年限', type: 'select', options: [{ value: '1', label: '1年内' }, { value: '2', label: '1-3年' }, { value: '3', label: '3-5年' }, { value: '4', label: '5-10年' }, { value: '5', label: '10年以上' }] },
+        { n: 'q2', label: '2.可承受最大亏损', type: 'select', options: [{ value: '1', label: '几乎不能亏' }, { value: '2', label: '5%以内' }, { value: '3', label: '10%以内' }, { value: '4', label: '30%以内' }, { value: '5', label: '30%以上' }] },
+        { n: 'q3', label: '3.投资经验', type: 'select', options: [{ value: '1', label: '无' }, { value: '2', label: '很少' }, { value: '3', label: '一般' }, { value: '4', label: '丰富' }, { value: '5', label: '专业' }] },
+        { n: 'q4', label: '4.收入稳定性', type: 'select', options: [{ value: '1', label: '很不稳定' }, { value: '2', label: '较不稳定' }, { value: '3', label: '一般' }, { value: '4', label: '较稳定' }, { value: '5', label: '非常稳定' }] },
+        { n: 'q5', label: '5.风险偏好', type: 'select', options: [{ value: '1', label: '保守' }, { value: '2', label: '稳健' }, { value: '3', label: '平衡' }, { value: '4', label: '进取' }, { value: '5', label: '激进' }] },
+      ],
+      result: d => kv({ '客户': d.name + '（' + d.customer_no + '）', '风险承受等级': d.risk_label + '（' + d.risk_level + '级）' }),
+    },
+    {
+      code: 'UC-605', name: '基金/股票申购', method: 'POST', path: '/api/invest/buy',
+      fields: [
+        { n: 'ident', label: '客户身份标识', required: true, hint: '证件号/邮箱/手机号/账号，任填其一' },
+        { n: 'product_code', label: '产品代码', required: true, hint: '如 000001 / 110020 / AAPL' },
+        { n: 'amount', label: '申购金额(元)', type: 'number', required: true, hint: '从客户储蓄账户扣款，按当日净值折算份额' },
+      ],
+      result: d => kv({ '产品': d.product, '申购金额': money(d.amount), '成交净值(CNY)': money(d.price_cny), '确认份额': d.units, '行情日期': d.price_date, '流水号': d.txn_no }),
+    },
+    {
+      code: 'UC-606', name: '基金/股票赎回', method: 'POST', path: '/api/invest/sell',
+      fields: [
+        { n: 'ident', label: '客户身份标识', required: true, hint: '证件号/邮箱/手机号/账号，任填其一' },
+        { n: 'product_code', label: '产品代码', required: true },
+        { n: 'units', label: '赎回份额', type: 'number', hint: '全部赎回可勾选下方，或填份额' },
+        { n: 'all', label: '全部赎回', type: 'checkbox' },
+      ],
+      result: d => kv({ '产品': d.product, '赎回份额': d.units, '成交净值(CNY)': money(d.price_cny), '到账金额': money(d.proceeds), '本次已实现盈亏': money(d.realized), '流水号': d.txn_no }),
+      validate: v => (!v.all && !(Number(v.units) > 0)) ? '请填写赎回份额，或勾选「全部赎回」' : null,
+    },
+    {
+      code: 'UC-607', name: '持仓与盈亏查询', method: 'GET', path: '/api/invest/holdings',
+      fields: [{ n: 'ident', label: '客户身份标识', required: true, hint: '证件号/邮箱/手机号/账号，任填其一' }],
+      result: d => kv({ '客户': d.customer.name + '（' + d.customer.customer_no + '）', '风险等级': d.customer.risk_label, '总市值': money(d.summary.total_market_value), '总成本': money(d.summary.total_cost), '浮动盈亏': money(d.summary.total_unrealized), '已实现盈亏': money(d.summary.total_realized), '累计总盈亏': money(d.summary.total_pnl) })
+        + (d.holdings.length ? '<h4>持仓明细</h4>' + tbl(d.holdings, [
+          { k: 'name', label: '产品' }, { k: 'units', label: '份额' },
+          { k: 'price_cny', label: '现价(CNY)', fmt: v => v == null ? '-' : money(v) },
+          { k: 'market_value', label: '市值', fmt: money }, { k: 'cost', label: '成本', fmt: money },
+          { k: 'unrealized', label: '浮动盈亏', fmt: money }, { k: 'unrealized_pct', label: '浮动%', fmt: v => v == null ? '-' : pct(v) },
+          { k: 'cumulative', label: '累计盈亏', fmt: money },
+          { k: 'day_pct', label: '日', fmt: v => v == null ? '-' : pct(v) }, { k: 'week_pct', label: '周', fmt: v => v == null ? '-' : pct(v) },
+          { k: 'month_pct', label: '月', fmt: v => v == null ? '-' : pct(v) }, { k: 'year_pct', label: '年', fmt: v => v == null ? '-' : pct(v) },
+        ]) + '<p class="hint">日/周/月/年为价格变动幅度（不含期间买卖现金流）；标「非当日」的价为最近可得行情</p>' : `<p class="hint">${d.hint || '暂无持仓'}</p>`),
+    },
+  ],
+
   // ================= 系统管理员 =================
   ADMIN: [
     {
@@ -392,6 +468,19 @@ const OPERATIONS = {
       fields: [{ n: 'confirm', label: '我已确认恢复风险', type: 'checkboxVal', value: 'true', required: true }],
       hint: '高风险操作：会用备份文件覆盖当前数据',
       result: d => kv(Object.fromEntries(Object.entries(d.restored || {}).map(([k, v]) => [objectLabel(k), v]))),
+    },
+    {
+      code: 'UC-508', name: '理财产品维护', method: 'POST', path: '/api/invest/admin/product',
+      fields: [
+        { n: 'code', label: '产品代码', required: true, hint: '基金填基金代码(如000001)，股票填美股代码(如AAPL)' },
+        { n: 'name', label: '产品名称', required: true },
+        { n: 'ptype', label: '类型', type: 'select', options: [{ value: 'FUND', label: '基金(人民币,天天基金)' }, { value: 'STOCK', label: '股票(美股USD,自动折CNY)' }] },
+        { n: 'market_symbol', label: '行情代码', required: true, hint: '一般同产品代码' },
+        { n: 'risk_level', label: '风险等级', type: 'select', options: [{ value: '1', label: '1-低' }, { value: '2', label: '2-中低' }, { value: '3', label: '3-中' }, { value: '4', label: '4-中高' }, { value: '5', label: '5-高' }] },
+        { n: 'status', label: '状态', type: 'select', options: [{ value: '1', label: '在售' }, { value: '0', label: '停售' }] },
+      ],
+      hint: '维护理财产品目录；股票默认按美股(USD)取价并折算人民币',
+      result: d => kv({ '产品代码': d.code, '名称': d.name }),
     },
   ],
 };

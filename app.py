@@ -21,6 +21,7 @@ from savings import bp as savings_bp
 from loan import bp as loan_bp
 from forex import bp as forex_bp
 from creditcard import bp as creditcard_bp
+from invest import bp as invest_bp
 from admin import bp as admin_bp
 
 
@@ -42,7 +43,7 @@ def create_app():
     app = Flask(__name__, static_folder="static", static_url_path="")
     app.json = MongoJSONProvider(app)
 
-    for bp in (auth_bp, savings_bp, loan_bp, forex_bp, creditcard_bp, admin_bp):
+    for bp in (auth_bp, savings_bp, loan_bp, forex_bp, creditcard_bp, invest_bp, admin_bp):
         app.register_blueprint(bp)
 
     # 用户输入的金额/数字非法（如 "abc"）统一返回 400，而不是 500 崩溃

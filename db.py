@@ -97,7 +97,8 @@ def ensure_indexes():
     # 先预建集合：确保事务内首次写入(如 counters 自增 upsert)不会触发「事务内隐式建集合」限制
     existing = set(db.list_collection_names())
     for c in ("counters", "user_account", "customer", "account", "business_transaction",
-              "loan", "fx_account", "credit_card", "credit_card_bill", "audit_log", "system_param"):
+              "loan", "fx_account", "credit_card", "credit_card_bill", "audit_log", "system_param",
+              "invest_product", "invest_price", "invest_holding"):
         if c not in existing:
             try:
                 db.create_collection(c)
@@ -107,16 +108,28 @@ def ensure_indexes():
     db.customer.create_index([("customer_no", ASCENDING)], unique=True)
     db.customer.create_index([("id_no", ASCENDING)], unique=True)  # 证件号全局唯一
     db.customer.create_index([("email", ASCENDING)], unique=True, sparse=True)  # 邮箱唯一（仅对已登记邮箱的客户生效）
-    db.customer.create_index([("phone", ASCENDING)], unique=True, sparse=True)  # 手机号全局唯一（选填）
+    # 手机号唯一索引（仅对已填手机号生效）：
+    #  1) 旧库可能存在原来的非唯一/仅 sparse 的 phone_1，同名不同规格会冲突并中断建索引 → 先删旧的；
+    #  2) 手机号选填、未填时存空串""，sparse 只跳过缺失/null 不跳过""，会误判多个空手机号重复 →
+    #     用 partialFilterExpression {phone:{$gt:""}} 只对非空手机号建唯一约束。
+    if any(ix["name"] == "phone_1" for ix in db.customer.list_indexes()):
+        db.customer.drop_index("phone_1")
+    db.customer.create_index([("phone", ASCENDING)], unique=True,
+                             partialFilterExpression={"phone": {"$gt": ""}})
     db.account.create_index([("account_no", ASCENDING)], unique=True)
     db.account.create_index([("card_no", ASCENDING)], unique=True)
     # 客户↔账户 1:1：同一客户只能有一个在用（非销户）储蓄账户
     # 先删旧的非唯一索引（历史遗留），再建 partial unique，避免同字段重复索引
     if "customer_id_1" in [ix["name"] for ix in db.account.list_indexes()]:
         db.account.drop_index("customer_id_1")
-    db.account.create_index([("customer_id", ASCENDING)], unique=True,
-                            name="uk_account_customer_active",
-                            partialFilterExpression={"status": {"$ne": C.ACCOUNT_CLOSED}})
+    try:
+        # 保留原“非销户账户唯一”意图，但包 try 兜底：$ne 在部分索引里不被 MongoDB 支持会抛异常，
+        # 此处只告警、不阻断后续 ensure_indexes 与 run_seed（否则整库无法初始化）。
+        db.account.create_index([("customer_id", ASCENDING)], unique=True,
+                                name="uk_account_customer_active",
+                                partialFilterExpression={"status": {"$ne": C.ACCOUNT_CLOSED}})
+    except Exception as e:  # noqa: BLE001
+        print(f"[index] 账户 uk_account_customer_active 索引未生效（partial index 不支持 $ne，需改约束或改用应用层校验）：{e}")
     db.business_transaction.create_index([("txn_no", ASCENDING)], unique=True)
     db.business_transaction.create_index([("account_id", ASCENDING), ("txn_time", ASCENDING)])
     db.business_transaction.create_index([("customer_id", ASCENDING)])
@@ -140,6 +153,10 @@ def ensure_indexes():
     db.audit_log.create_index([("created_at", ASCENDING)])
     db.audit_log.create_index([("user_id", ASCENDING)])
     db.system_param.create_index([("param_key", ASCENDING)], unique=True)
+    # 投资理财：产品目录/每日价/客户持仓
+    db.invest_product.create_index([("code", ASCENDING)], unique=True)
+    db.invest_price.create_index([("product_code", ASCENDING), ("date", ASCENDING)], unique=True)
+    db.invest_holding.create_index([("customer_id", ASCENDING), ("product_code", ASCENDING)], unique=True)
 
 
 def ping():
