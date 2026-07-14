@@ -42,6 +42,9 @@ class MongoJSONProvider(DefaultJSONProvider):
 def create_app():
     app = Flask(__name__, static_folder="static", static_url_path="")
     app.json = MongoJSONProvider(app)
+    # 静态文件(operations.js/app.js/style.css)不做长期缓存：浏览器每次校验，
+    # 避免每次更新前端后用户看到旧页面还要手动硬刷新（Cache-Control: max-age=0）。
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
     for bp in (auth_bp, savings_bp, loan_bp, forex_bp, creditcard_bp, invest_bp, admin_bp):
         app.register_blueprint(bp)
