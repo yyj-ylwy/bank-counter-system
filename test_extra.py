@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app import create_app
 from db import get_client
-from common import validate_id_no
+from common import validate_phone
 
 get_client().drop_database("bank_extra_test")  # 先清掉上次异常/超时的残留，保证幂等
 app = create_app()
@@ -56,23 +56,19 @@ def open_acct(bal="0"):
 
 
 # ==================== 一、基本路径测试法（白盒）====================
-# 目标函数 common.validate_id_no(id_type, id_no) 的控制流图（判定节点 D1~D5）：
-#   entry → D1:not s ─T→ 返回"不能为空"(R1)
-#            └F→ D2:类型不支持 ─T→ 返回"不支持类型"(R2)
-#                 └F→ D3:是身份证? ─T→ D4:18位且格式? ─F→ 返回"身份证格式非法"(R3)
-#                 │                                    └T→ 返回 通过(R4)
-#                 └F(非身份证)→ D5:长度5~30? ─F→ 返回"证件号格式非法"(R5)
-#                                              └T→ 返回 通过(R6)
-# 判定节点数 = 5(D1~D5)  →  圈复杂度 V(G) = 5 + 1 = 6  →  6 条独立(基本)路径
-# 下列 6 条用例正好各覆盖一条独立路径，达成基本路径覆盖。
+# 说明：课本要求"复合条件(OR/AND)须拆成单条件的嵌套判断"再算环路复杂度，故这里选
+#       只有【单条件判定】的 common.validate_phone(phone) 作示例，V(G) 无歧义。
+# 控制流图（2 个单条件判定节点 D1、D2，均不含 or/and）：
+#   entry(p=strip) → D1: p=="" ─T→ 返回 True(空放行, R1)
+#                     └F→ D2: 不匹配 1[3-9]\d{9} ─T→ 返回 False(格式非法, R2)
+#                          └F→ 返回 True(合法, R3)
+# 判定节点数 = 2  →  环路复杂度 V(G) = 2 + 1 = 3  →  3 条独立(基本)路径
+# 下列 3 条用例各覆盖一条独立路径，达成基本路径覆盖。
 def t_basis_path():
-    print("== 基本路径测试法(白盒) · validate_id_no · V(G)=6 · 6条独立路径 ==")
-    ok("路径1 s为空→拒绝 [基本路径]", validate_id_no("身份证", "   ")[0] is False)
-    ok("路径2 证件类型不支持→拒绝 [基本路径]", validate_id_no("驾照", "110101199001011234")[0] is False)
-    ok("路径3 身份证位数非法→拒绝 [基本路径]", validate_id_no("身份证", "12345")[0] is False)
-    ok("路径4 身份证合法→通过 [基本路径]", validate_id_no("身份证", "110101199001011234")[0] is True)
-    ok("路径5 非身份证长度非法→拒绝 [基本路径]", validate_id_no("护照", "AB")[0] is False)
-    ok("路径6 非身份证合法→通过 [基本路径]", validate_id_no("护照", "E12345678")[0] is True)
+    print("== 基本路径测试法(白盒) · validate_phone(单条件判定) · V(G)=3 · 3条独立路径 ==")
+    ok("路径1 手机号为空→放行(选填) [基本路径]", validate_phone("")[0] is True)
+    ok("路径2 非空但格式非法→拒绝 [基本路径]", validate_phone("12345")[0] is False)
+    ok("路径3 非空且合法→通过 [基本路径]", validate_phone("13800000001")[0] is True)
 
 
 # ==================== 二、因果图 / 判定表法（黑盒）====================
