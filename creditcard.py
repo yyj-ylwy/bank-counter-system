@@ -140,6 +140,11 @@ def apply():
         except Exception:  # noqa: BLE001
             return fail("E-VAL", "月收入应为数字", 400)
 
+    # 每人每种卡最多一张（非终态）：同种卡已在办理/使用中则拒绝，保证「身份+卡种」唯一定位
+    if db.credit_card.count_documents({"customer_id": cust["_id"], "card_type": card_type,
+                                       "status": {"$in": C.CC_NON_TERMINAL}}):
+        return fail("E-DUP", f"该客户已持有一张「{card_type}」，每种卡每人限一张")
+
     spec = C.CARD_SPECS[card_type]
     cc = {
         "card_no": new_credit_card_no(),
@@ -168,15 +173,16 @@ def apply():
 @clerk
 def approve():
     d = _body()
-    card_no = (d.get("card_no") or "").strip()
+    ident = (d.get("ident") or "").strip()
+    card_type = (d.get("card_type") or "").strip()
     decision = (d.get("decision") or "").strip().upper()  # APPROVED / REJECTED
     if decision not in ("APPROVED", "REJECTED"):
         return fail("E-OP", "审批结论非法（APPROVED/REJECTED）", 400)
     db = get_db()
-    cc = db.credit_card.find_one({"card_no": card_no})
-    if not cc:
-        return fail("E-NOCARD", "未找到信用卡申请")
-    cust = db.customer.find_one({"_id": cc["customer_id"]})
+    cc, cust, rerr = resolve_credit_card(db, ident, card_type=card_type)  # 凭身份+卡种定位唯一卡
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    card_no = cc["card_no"]
     spec = _spec(cc)
     lr = cc.get("limit_req")
     has_pending_increase = bool(lr and lr.get("status") == "PENDING")
@@ -262,9 +268,10 @@ def approve():
 def increase_limit():
     d = _body()
     ident = (d.get("ident") or "").strip()
+    card_type = (d.get("card_type") or "").strip()
     new_limit = D(d.get("new_limit") or 0)
     db = get_db()
-    cc, cust, rerr = resolve_credit_card(db, ident)  # 凭任意身份标识定位信用卡
+    cc, cust, rerr = resolve_credit_card(db, ident, card_type=card_type)  # 凭身份+卡种定位唯一卡
     if rerr:
         return fail(rerr[0], rerr[1])
     if cc["status"] != C.CC_ACTIVE:
@@ -289,6 +296,7 @@ def increase_limit():
 def consume():
     d = _body()
     ident = (d.get("ident") or "").strip()
+    card_type = (d.get("card_type") or "").strip()
     currency = (d.get("currency") or "").strip().upper()
     amount = D(d.get("amount") or 0)
     merchant = (d.get("merchant") or "").strip()[:C.TEXT_MAX]
@@ -298,7 +306,7 @@ def consume():
         return fail("E-AMT", "消费金额必须大于零", 400)
 
     db = get_db()
-    cc, cust, rerr = resolve_credit_card(db, ident)  # 凭任意身份标识定位信用卡
+    cc, cust, rerr = resolve_credit_card(db, ident, card_type=card_type)  # 凭身份+卡种定位唯一卡
     if rerr:
         return fail(rerr[0], rerr[1])
     if cc["status"] != C.CC_ACTIVE:  # E-1 非正常卡不可消费
@@ -379,11 +387,12 @@ def consume():
 def repay():
     d = _body()
     ident = (d.get("ident") or "").strip()
+    card_type = (d.get("card_type") or "").strip()
     repay_type = (d.get("repay_type") or "").strip().upper()  # FULL(提前) / SCHEDULED(按期) / MIN(按期最低额)
     if repay_type not in ("FULL", "SCHEDULED", "MIN"):
         return fail("E-OP", "还款方式非法（提前FULL/按期SCHEDULED/按期最低额MIN）", 400)
     db = get_db()
-    cc, cust, rerr = resolve_credit_card(db, ident)  # 凭任意身份标识定位信用卡
+    cc, cust, rerr = resolve_credit_card(db, ident, card_type=card_type)  # 凭身份+卡种定位唯一卡
     if rerr:
         return fail(rerr[0], rerr[1])
     card_cur = _card_currency(cc)
@@ -488,7 +497,8 @@ def repay():
 def records():
     db = get_db()
     ident = (request.args.get("ident") or "").strip()
-    cc, cust, rerr = resolve_credit_card(db, ident)
+    card_type = (request.args.get("card_type") or "").strip()
+    cc, cust, rerr = resolve_credit_card(db, ident, card_type=card_type)  # 凭身份+卡种定位唯一卡
     if rerr:
         return fail(rerr[0], rerr[1])
     mstart = now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)  # 本月 1 号 0 点
@@ -574,9 +584,10 @@ def redeem():
 def card_op():
     d = _body()
     ident = (d.get("ident") or "").strip()
+    card_type = (d.get("card_type") or "").strip()
     op = (d.get("op") or "").strip().upper()  # LOSS/REISSUE/FREEZE/UNFREEZE/EXCEPTION
     db = get_db()
-    cc, cust, rerr = resolve_credit_card(db, ident)  # 凭任意身份标识定位信用卡
+    cc, cust, rerr = resolve_credit_card(db, ident, card_type=card_type)  # 凭身份+卡种定位唯一卡
     if rerr:
         return fail(rerr[0], rerr[1])
     card_no = cc["card_no"]

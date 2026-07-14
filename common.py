@@ -229,10 +229,12 @@ def resolve_account_no(db, ident, account_no=None, session=None):
     return acc["account_no"], cust, None
 
 
-def resolve_credit_card(db, ident, card_no=None, statuses=None, session=None):
-    """凭任意身份标识定位客户的信用卡。返回 (credit_card, customer, error)。"""
+def resolve_credit_card(db, ident, card_no=None, statuses=None, session=None, card_type=None):
+    """凭任意身份标识定位客户的信用卡。返回 (credit_card, customer, error)。
+    每人每种卡最多一张（非终态），因此「身份标识 + card_type」可唯一定位一张卡，无需记卡号。"""
     ident = (ident or "").strip()
     card_no = (card_no or "").strip()
+    card_type = (card_type or "").strip()
     if not ident:
         return None, None, ("E-ID", "请提供身份标识（证件号/邮箱/手机号/账号/卡号）")
     # ident 本身可能就是信用卡号
@@ -249,13 +251,18 @@ def resolve_credit_card(db, ident, card_no=None, statuses=None, session=None):
     q = {"customer_id": cust["_id"]}
     if card_no:
         q["card_no"] = card_no
+    if card_type:
+        q["card_type"] = card_type
     if statuses:
         q["status"] = {"$in": list(statuses)}
+    elif card_type:
+        q["status"] = {"$in": C.CC_NON_TERMINAL}  # 按卡种定位时排除已拒绝/已失效，确保唯一
     cards = list(db.credit_card.find(q, session=session))
     if not cards:
-        return None, cust, ("E-NOCARD", "该客户名下无匹配信用卡")
+        hint = f"该客户名下无{('该卡种' if card_type else '匹配')}信用卡"
+        return None, cust, ("E-NOCARD", hint)
     if len(cards) > 1:
-        return None, cust, ("E-MULTI", "该客户有多张信用卡，请补充卡号：" + "、".join(c["card_no"] for c in cards))
+        return None, cust, ("E-MULTI", "该客户有多张信用卡，请选择卡种或补充卡号：" + "、".join(f"{c.get('card_type')}={c['card_no']}" for c in cards))
     return cards[0], cust, None
 
 

@@ -62,6 +62,8 @@ CC_FROZEN = "FROZEN"
 CC_LOST = "LOST"
 CC_REJECTED = "REJECTED"
 CC_INVALID = "INVALID"   # 补卡后原卡失效
+# 非终态卡集合：每人每种卡在这些状态下最多持有一张，据此可凭「身份+卡种」唯一定位一张卡
+CC_NON_TERMINAL = [CC_PENDING, CC_ACTIVE, CC_FROZEN, CC_LOST]
 
 # ---- 账单状态 ----
 BILL_UNPAID = "UNPAID"

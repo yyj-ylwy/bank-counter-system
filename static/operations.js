@@ -2,6 +2,8 @@
 // 引擎(app.js)读取这里的配置自动渲染菜单、表单、提交与结果。改需求只需改这张表。
 
 const ID_TYPES = ['身份证', '护照', '港澳通行证', '军官证'];
+// 信用卡卡种（每人每种卡最多一张，故「身份+卡种」即可唯一定位一张卡，无需记卡号）
+const CARD_TYPES = ['银联白金卡', '银联钻石卡', 'Visa Platinum', 'MasterCard World Elite'];
 // 币种：显示中文，提交仍用 USD/EUR/JPY
 const CURRENCIES = [{ value: 'USD', label: '美元(USD)' }, { value: 'EUR', label: '欧元(EUR)' }, { value: 'JPY', label: '日元(JPY)' }, { value: 'GBP', label: '英镑(GBP)' }, { value: 'HKD', label: '港元(HKD)' }, { value: 'AUD', label: '澳元(AUD)' }, { value: 'CAD', label: '加元(CAD)' }, { value: 'CHF', label: '瑞郎(CHF)' }, { value: 'SGD', label: '新元(SGD)' }];
 
@@ -281,21 +283,23 @@ const OPERATIONS = {
       code: 'UC-401', name: '信用卡申请办理', method: 'POST', path: '/api/creditcard/apply',
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
-        { n: 'card_type', label: '卡片类型', type: 'select', options: ['银联白金卡', '银联钻石卡', 'Visa Platinum', 'MasterCard World Elite'] },
+        { n: 'card_type', label: '卡片类型', type: 'select', options: CARD_TYPES },
         { n: 'occupation', label: '职业' }, { n: 'monthly_income', label: '月收入', type: 'number' },
       ],
+      hint: '每人每种卡最多一张。',
       result: d => kv({ '卡号': d.credit_card.card_no, '卡种': d.credit_card.card_type, '卡组织': d.credit_card.network, '币种': d.credit_card.currency, '状态': d.credit_card.status_label }),
     },
     {
       code: 'UC-402', name: '审批（新卡 / 提额 同一处）', method: 'POST', path: '/api/creditcard/approve',
       fields: [
-        { n: 'card_no', label: '信用卡号', required: true },
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号，任填其一' },
+        { n: 'card_type', label: '卡种', type: 'select', options: CARD_TYPES, required: true },
         { n: 'decision', label: '审批结论', type: 'select', options: [{ value: '', label: '请选择审批结论' }, { value: 'APPROVED', label: '通过' }, { value: 'REJECTED', label: '拒绝' }] },
         { n: 'bill_day', label: '账单日', type: 'number', hint: '新卡审批填，每月几号出账单 1-28' },
         { n: 'repay_day', label: '还款日', type: 'number', hint: '新卡审批填，每月几号前还款 1-28' },
         { n: 'reason', label: '拒绝原因', hint: '仅拒绝时填写' },
       ],
-      hint: '新卡审批按卡种默认额度激活；提额审批新额度不得高于存款的 30%。',
+      hint: '凭身份+卡种定位唯一卡（无需卡号）。新卡审批按卡种默认额度激活；提额审批新额度不得高于存款的 30%。',
       result: d => {
         if (!d.credit_card) return '';
         const c = d.credit_card, base = { '卡号': c.card_no, '卡种': c.card_type, '状态': c.status_label };
@@ -311,6 +315,7 @@ const OPERATIONS = {
       code: 'UC-403', name: '提高信用额申请', method: 'POST', path: '/api/creditcard/increase-limit',
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
+        { n: 'card_type', label: '卡种', type: 'select', options: CARD_TYPES, required: true },
         { n: 'new_limit', label: '新授信额度', type: 'number', required: true, hint: '须高于当前额度；审批时不得超过存款的 30%' },
         { n: 'reason', label: '申请理由' },
       ],
@@ -320,6 +325,7 @@ const OPERATIONS = {
       code: 'UC-404', name: '模拟消费（自定义币种+金额）', method: 'POST', path: '/api/creditcard/consume',
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
+        { n: 'card_type', label: '消费卡种', type: 'select', options: CARD_TYPES, required: true },
         { n: 'currency', label: '消费币种', type: 'select', options: [{ value: 'CNY', label: '人民币(CNY)' }].concat(CURRENCIES) },
         { n: 'amount', label: '消费金额', type: 'number', required: true },
         { n: 'merchant', label: '商户/备注' },
@@ -331,6 +337,7 @@ const OPERATIONS = {
       code: 'UC-405', name: '还款处理（提前/按期/最低额）', method: 'POST', path: '/api/creditcard/repay',
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
+        { n: 'card_type', label: '还款卡种', type: 'select', options: CARD_TYPES, required: true },
         { n: 'repay_type', label: '还款方式', type: 'select', options: [{ value: 'FULL', label: '提前还款(全额结清)' }, { value: 'SCHEDULED', label: '按期还款(指定金额)' }, { value: 'MIN', label: '按期最低额还款' }] },
         { n: 'amount', label: '还款金额（按期还款填）', type: 'number' },
       ],
@@ -339,7 +346,10 @@ const OPERATIONS = {
     },
     {
       code: 'UC-406', name: '本月消费记录', method: 'GET', path: '/api/creditcard/records',
-      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }],
+      fields: [
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
+        { n: 'card_type', label: '卡种', type: 'select', options: CARD_TYPES, required: true },
+      ],
       result: d => kv({ '卡号': d.credit_card.card_no, '卡种': d.credit_card.card_type, '账月': d.month, '本月消费合计': money(d.consume_total) + ' ' + d.credit_card.currency, '授信额度': money(d.credit_card.credit_limit) + ' ' + d.credit_card.currency, '剩余可用额度': money(d.credit_card.available_limit) + ' ' + d.credit_card.currency })
         + (d.records.length ? '<h4>本月明细</h4>' + tbl(d.records, [{ k: 'txn_time', label: '时间' }, { k: 'business_label', label: '类型' }, { k: 'amount', label: '金额', fmt: money }, { k: 'currency', label: '币种' }, { k: 'orig', label: '原始消费' }, { k: 'merchant', label: '商户' }]) : '<p>本月暂无记录</p>'),
     },
@@ -362,6 +372,7 @@ const OPERATIONS = {
       code: 'UC-409', name: '挂失/补卡/冻结/异常', method: 'POST', path: '/api/creditcard/card',
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
+        { n: 'card_type', label: '卡种', type: 'select', options: CARD_TYPES, required: true },
         { n: 'op', label: '操作', type: 'select', options: [{ value: 'LOSS', label: '挂失' }, { value: 'REISSUE', label: '补卡' }, { value: 'FREEZE', label: '冻结' }, { value: 'UNFREEZE', label: '解冻' }, { value: 'EXCEPTION', label: '异常登记' }] },
         { n: 'note', label: '异常说明' },
       ],
