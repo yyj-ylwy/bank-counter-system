@@ -25,6 +25,11 @@ function money(v) {
   if (v == null || v === '') return '';
   return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+// 费用明细 {中文:金额} → "佣金 5，过户费 0.03"（交割单展示）
+function feeStr(detail) {
+  if (!detail) return '';
+  return Object.keys(detail).map(function (k) { return k + ' ' + detail[k]; }).join('，');
+}
 // 人民币金额大写（银行回单标配），如 1234.56 → 壹仟贰佰叁拾肆元伍角陆分
 function rmbUpper(num) {
   num = Number(num);

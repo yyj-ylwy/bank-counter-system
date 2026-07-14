@@ -171,3 +171,12 @@ INVEST_PTYPE_LABEL = {"FUND": "基金", "STOCK": "股票"}      # 价格源：FU
 INVEST_SOURCE_LABEL = {"ttjj": "天天基金", "av": "AlphaVantage"}
 RISK_LEVEL_LABEL = {1: "低", 2: "中低", 3: "中", 4: "中高", 5: "高"}  # 产品风险等级 & 客户风险承受等级
 INVEST_PRICE_STALE_MAX_DAYS = 7   # 成交价最多允许旧 7 天；再旧则拒绝买卖（不能用陈价成交）
+# 手续费/税费（教学演示：股票按 A 股费率模型，文档注明）
+INVEST_FUND_BUY_FEE = "0.0015"        # 基金申购费 0.15%（外扣法：净申购=金额/(1+费率)）
+INVEST_FUND_REDEEM_TIERS = [(7, "0.015"), (30, "0.005")]  # 赎回费随持有天数递减：<7天1.5% / 7~30天0.5% / ≥30天0
+INVEST_STOCK_COMMISSION = "0.00025"   # 股票佣金 万2.5（买卖双向）
+INVEST_STOCK_COMMISSION_MIN = "5"     # 佣金单笔最低 5 元
+INVEST_STOCK_STAMP = "0.0005"         # 印花税 0.05%（仅卖出单边）
+INVEST_STOCK_TRANSFER = "0.00002"     # 过户费 0.002%（买卖双向）
+INVEST_CONFIRM_DAYS = 1               # 申购 T+1 确认份额（演示）
+INVEST_SETTLE_DAYS = 1                # 赎回/卖出 T+1 到账（演示）

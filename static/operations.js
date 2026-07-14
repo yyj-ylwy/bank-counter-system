@@ -373,7 +373,10 @@ const OPERATIONS = {
         { n: 'product_code', label: '产品代码', required: true, hint: '如 000001 / 110020 / AAPL' },
         { n: 'amount', label: '申购金额(元)', type: 'number', required: true, hint: '从客户储蓄账户扣款，按当日净值折算份额' },
       ],
-      result: d => kv({ '产品': d.product, '申购金额': money(d.amount), '成交净值(CNY)': money(d.price_cny), '确认份额': d.units, '行情日期': d.price_date, '流水号': d.txn_no }),
+      result: d => kv({ '产品': d.product + (d.ptype ? '（' + d.ptype + '）' : ''), '成交金额': money(d.amount),
+        '手续费': money(d.fee) + '（' + feeStr(d.fee_detail) + '）', '实付合计': money(d.total_debit),
+        '成交净值(CNY)': money(d.price_cny), '确认份额': d.units, '份额确认日(T+1)': d.confirm_date,
+        '行情日期': d.price_date, '流水号': d.txn_no }),
     },
     {
       code: 'UC-606', name: '基金/股票赎回', method: 'POST', path: '/api/invest/sell',
@@ -383,7 +386,10 @@ const OPERATIONS = {
         { n: 'units', label: '赎回份额', type: 'number', hint: '全部赎回可勾选下方，或填份额' },
         { n: 'all', label: '全部赎回', type: 'checkbox' },
       ],
-      result: d => kv({ '产品': d.product, '赎回份额': d.units, '成交净值(CNY)': money(d.price_cny), '到账金额': money(d.proceeds), '本次已实现盈亏': money(d.realized), '流水号': d.txn_no }),
+      result: d => kv({ '产品': d.product + (d.ptype ? '（' + d.ptype + '）' : ''), '赎回份额': d.units,
+        '成交净值(CNY)': money(d.price_cny), '成交金额': money(d.amount_gross),
+        '手续费': money(d.fee) + '（' + feeStr(d.fee_detail) + '）', '实收到账': money(d.proceeds),
+        '本次已实现盈亏': money(d.realized), '资金到账日(T+1)': d.settle_date, '流水号': d.txn_no }),
       validate: v => (!v.all && !(Number(v.units) > 0)) ? '请填写赎回份额，或勾选「全部赎回」' : null,
     },
     {

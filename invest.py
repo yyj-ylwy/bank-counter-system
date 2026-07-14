@@ -4,7 +4,9 @@
       简化风险测评、基金/股票申购与赎回、持仓查询(累计盈亏 + 日/周/月/年价格变动)。
 金额口径：份额/净值 4 位小数(m4/D4)；成本/盈亏/金额 2 位(m/D)；外币产品统一折 CNY 结算。
 数据源(均免密钥/复用现有)：基金=天天基金(CNY)；股票=Alpha Vantage 美股(USD→CNY 用外汇中间价)。
-ponytail: 教学模拟系统，未含申赎费率/税费/分红再投/定投；区间盈亏为"价格变动"口径(不含期间现金流)。
+手续费(A股规则)：基金申购费外扣、赎回费按持有天数递减；股票佣金(双向,最低5元)+印花税(卖出)+过户费。
+申赎均生成交割单快照(fee/fee_detail/成交额/实收实付/T+1确认到账)。
+ponytail: 教学模拟系统，未含分红再投/定投；区间盈亏为"价格变动"口径(不含期间现金流)。
 """
 import json
 import re
@@ -184,6 +186,40 @@ def product_view(db, p, with_price=True):
     return v
 
 
+# ==================== 手续费/税费（纯函数，一处计算，申购/赎回共用）====================
+def buy_fees(ptype, amount):
+    """买入费用。基金(外扣法)：amount=申购金额(含费)，净申购=amount/(1+费率)，份额基数=净额，扣款=amount。
+    股票(A股费率,外加)：amount=成交额，佣金+过户费外加，份额基数=amount，扣款=amount+费。
+    返回 (units_base, fee_total, fee_detail{中文:金额}, total_debit)。"""
+    if ptype == "FUND":
+        rate = dec(C.INVEST_FUND_BUY_FEE)
+        net = D(amount / (Decimal(1) + rate))
+        fee = amount - net
+        return net, fee, {"申购费": float(fee)}, amount
+    comm = max(D(dec(C.INVEST_STOCK_COMMISSION) * amount), D(C.INVEST_STOCK_COMMISSION_MIN))
+    transfer = D(dec(C.INVEST_STOCK_TRANSFER) * amount)
+    fee = comm + transfer
+    return amount, fee, {"佣金": float(comm), "过户费": float(transfer)}, amount + fee
+
+
+def sell_fees(ptype, gross, hold_days=None):
+    """卖出/赎回费用。gross=成交额(份额×净值)。返回 (fee_total, fee_detail, proceeds=gross-fee)。
+    基金赎回费按持有天数递减(<7天1.5%/7~30天0.5%/≥30天0)；股票=佣金(双向)+印花税(卖出)+过户费。"""
+    if ptype == "FUND":
+        rate = D(0)
+        for days, r in C.INVEST_FUND_REDEEM_TIERS:
+            if hold_days is not None and hold_days < days:
+                rate = dec(r)
+                break
+        fee = D(gross * rate)
+        return fee, {"赎回费": float(fee), "赎回费率": float(rate), "持有天数": hold_days}, gross - fee
+    comm = max(D(dec(C.INVEST_STOCK_COMMISSION) * gross), D(C.INVEST_STOCK_COMMISSION_MIN))
+    stamp = D(dec(C.INVEST_STOCK_STAMP) * gross)
+    transfer = D(dec(C.INVEST_STOCK_TRANSFER) * gross)
+    fee = comm + stamp + transfer
+    return fee, {"佣金": float(comm), "印花税": float(stamp), "过户费": float(transfer)}, gross - fee
+
+
 # ==================== UC-601 产品目录（理财业务员维护 / 查看）====================
 @bp.post("/product")
 @clerk
@@ -307,40 +343,46 @@ def buy():
     price_cny, pdoc, perr = price_for_trade(db, p)  # 事务外取新鲜价
     if perr:
         return fail(perr[0], perr[1])
-    units = D4(amount / price_cny)
+    units_base, fee, fee_detail, total_debit = buy_fees(p["ptype"], amount)  # 计费(基金外扣/股票外加)
+    units = D4(units_base / price_cny)
     if units <= 0:
         return fail("E-AMT", "申购金额过小，折算份额不足", 400)
+    confirm_date = (now() + _td(days=C.INVEST_CONFIRM_DAYS)).strftime("%Y-%m-%d")  # T+N 确认日
 
     def txn(s):
-        acc, err = check_account(db, account_no, need_amount=amount, session=s)  # E-BAL/状态
+        acc, err = check_account(db, account_no, need_amount=total_debit, session=s)  # 扣含费总额
         if err:
             return None, err
         db.account.update_one({"_id": acc["_id"]},
-                              {"$set": {"balance": m(dec(acc["balance"]) - amount)}}, session=s)
+                              {"$set": {"balance": m(dec(acc["balance"]) - total_debit)}}, session=s)
         h = db.invest_holding.find_one({"customer_id": cust["_id"], "product_code": code}, session=s)
-        if h:  # 加权平均成本：份额与剩余成本各自累加
+        if h:  # 加权平均成本：份额、含费成本各自累加；首次买入日保留(供赎回费持有期档位)
             db.invest_holding.update_one({"_id": h["_id"]}, {"$set": {
                 "units": m4(dec(h["units"]) + units),
-                "remaining_cost_cny": m(dec(h["remaining_cost_cny"]) + amount)}}, session=s)
+                "remaining_cost_cny": m(dec(h["remaining_cost_cny"]) + total_debit)}}, session=s)
         else:
             db.invest_holding.insert_one({"customer_id": cust["_id"], "product_code": code,
-                "units": m4(units), "remaining_cost_cny": m(amount), "realized_pnl_cny": m(0),
-                "created_at": now()}, session=s)
-        t = write_txn(db, business_type=C.TXN_INVEST_BUY, amount=amount, user_id=g.user["_id"],
+                "units": m4(units), "remaining_cost_cny": m(total_debit), "realized_pnl_cny": m(0),
+                "first_buy_date": now(), "created_at": now()}, session=s)
+        t = write_txn(db, business_type=C.TXN_INVEST_BUY, amount=total_debit, user_id=g.user["_id"],
                       customer_id=cust["_id"], account_id=acc["_id"], session=s)
-        db.business_transaction.update_one({"_id": t["_id"]}, {"$set": {  # 交易快照
-            "product_code": code, "units": m4(units), "price_cny": m4(price_cny), "price_date": pdoc["date"]}}, session=s)
+        db.business_transaction.update_one({"_id": t["_id"]}, {"$set": {  # 交易/交割单快照
+            "product_code": code, "units": m4(units), "price_cny": m4(price_cny), "price_date": pdoc["date"],
+            "fee": m(fee), "fee_detail": fee_detail, "amount_gross": m(amount),
+            "confirm_date": confirm_date, "settle_status": "待确认(T+1)"}}, session=s)
         write_audit(db, user_id=g.user["_id"], action=C.TXN_INVEST_BUY, object_type="invest_holding",
                     object_id=code, result=C.RESULT_SUCCESS,
-                    detail={"amount": str(amount), "units": str(units), "price_cny": str(price_cny),
-                            "account_no": account_no}, session=s)
+                    detail={"amount": str(amount), "fee": str(fee), "units": str(units),
+                            "price_cny": str(price_cny), "account_no": account_no}, session=s)
         return t, None
 
     t, err = run_in_transaction(txn)
     if err:
         return fail(err[0], err[1])
-    return ok({"product": p["name"], "units": float(units), "price_cny": float(price_cny),
-               "amount": float(amount), "price_date": pdoc["date"], "txn_no": t["txn_no"]}, "申购成功")
+    return ok({"product": p["name"], "ptype": C.INVEST_PTYPE_LABEL.get(p["ptype"]),
+               "amount": float(amount), "fee": float(fee), "fee_detail": fee_detail,
+               "total_debit": float(total_debit), "units": float(units), "price_cny": float(price_cny),
+               "price_date": pdoc["date"], "confirm_date": confirm_date, "txn_no": t["txn_no"]}, "申购成功")
 
 
 # ==================== UC-605 赎回（卖出）====================
@@ -375,12 +417,16 @@ def sell():
         su = held if sell_all else sell_units
         if su > held:  # 防超卖
             return None, ("E-UNITS", f"赎回份额超过持仓：持有 {held}，赎回 {su}")
-        proceeds = D(su * price_cny)
+        gross = D(su * price_cny)  # 成交额(费前)
+        fbd = h.get("first_buy_date")
+        hold_days = (now() - fbd).days if fbd else None  # 持有天数→赎回费档位
+        fee, fee_detail, proceeds = sell_fees(p["ptype"], gross, hold_days)  # 计费，实收=费后
         if su >= held:  # 全部赎回：残余成本/份额归零，避免尾差
             removed_cost, new_units, new_cost = remaining_cost, D4(0), D(0)
         else:  # 部分赎回：按加权平均成本比例结转
             removed_cost = D(remaining_cost * su / held)
             new_units, new_cost = held - su, remaining_cost - removed_cost
+        realized_delta = proceeds - removed_cost  # 已实现盈亏(含费口径：实收−结转成本)
         acc, err = check_account(db, account_no, session=s)  # 状态(销户/冻结/挂失)
         if err:
             return None, err
@@ -388,23 +434,28 @@ def sell():
                               {"$set": {"balance": m(dec(acc["balance"]) + proceeds)}}, session=s)
         db.invest_holding.update_one({"_id": h["_id"]}, {"$set": {
             "units": m4(new_units), "remaining_cost_cny": m(new_cost),
-            "realized_pnl_cny": m(realized + (proceeds - removed_cost))}}, session=s)
+            "realized_pnl_cny": m(realized + realized_delta)}}, session=s)
         t = write_txn(db, business_type=C.TXN_INVEST_SELL, amount=proceeds, user_id=g.user["_id"],
                       customer_id=cust["_id"], account_id=acc["_id"], session=s)
-        db.business_transaction.update_one({"_id": t["_id"]}, {"$set": {  # 交易快照
-            "product_code": code, "units": m4(su), "price_cny": m4(price_cny),
-            "removed_cost": m(removed_cost), "realized": m(proceeds - removed_cost), "price_date": pdoc["date"]}}, session=s)
+        settle_date = (now() + _td(days=C.INVEST_SETTLE_DAYS)).strftime("%Y-%m-%d")  # T+N 到账日
+        db.business_transaction.update_one({"_id": t["_id"]}, {"$set": {  # 交易/交割单快照
+            "product_code": code, "units": m4(su), "price_cny": m4(price_cny), "price_date": pdoc["date"],
+            "amount_gross": m(gross), "fee": m(fee), "fee_detail": fee_detail,
+            "removed_cost": m(removed_cost), "realized": m(realized_delta),
+            "settle_date": settle_date, "settle_status": "待到账(T+1)"}}, session=s)
         write_audit(db, user_id=g.user["_id"], action=C.TXN_INVEST_SELL, object_type="invest_holding",
                     object_id=code, result=C.RESULT_SUCCESS,
-                    detail={"units": str(su), "proceeds": str(proceeds),
-                            "realized": str(proceeds - removed_cost), "account_no": account_no}, session=s)
-        return {"proceeds": float(proceeds), "units": float(su),
-                "realized": float(proceeds - removed_cost), "txn_no": t["txn_no"]}, None
+                    detail={"units": str(su), "gross": str(gross), "fee": str(fee), "proceeds": str(proceeds),
+                            "realized": str(realized_delta), "account_no": account_no}, session=s)
+        return {"units": float(su), "amount_gross": float(gross), "fee": float(fee), "fee_detail": fee_detail,
+                "proceeds": float(proceeds), "realized": float(realized_delta),
+                "settle_date": settle_date, "txn_no": t["txn_no"]}, None
 
     res, err = run_in_transaction(txn)
     if err:
         return fail(err[0], err[1])
-    return ok({"product": p["name"], "price_cny": float(price_cny), "price_date": pdoc["date"], **res}, "赎回成功")
+    return ok({"product": p["name"], "ptype": C.INVEST_PTYPE_LABEL.get(p["ptype"]),
+               "price_cny": float(price_cny), "price_date": pdoc["date"], **res}, "赎回成功")
 
 
 # ==================== UC-606 持仓查询（累计盈亏 + 日/周/月/年价格变动）====================
@@ -475,4 +526,18 @@ if __name__ == "__main__":
     su2 = units
     removed2, units, cost = cost, D4(0), D(0)
     assert units == D4(0) and cost == D(0)
-    print("invest self-check OK: 加权平均成本/已实现/未实现/清仓归零 全部通过")
+
+    # 手续费：基金外扣法（净申购=金额/(1+费率)，扣款=金额）
+    net, fee, det, debit = buy_fees("FUND", D(1000))
+    assert net == D("998.50") and fee == D("1.50") and debit == D(1000)
+    # 股票申购（外加）：佣金<最低时取 5 元 + 过户费
+    _, feeS, _, debitS = buy_fees("STOCK", D(1440))
+    assert feeS == D("5.03") and debitS == D("1445.03")               # 5(佣金保底)+0.03(过户费)
+    assert buy_fees("STOCK", D(100))[1] == D(5)                       # 佣金最低 5 元封底
+    # 基金赎回费按持有天数递减
+    assert sell_fees("FUND", D(750), 0)[2] == D("738.75")            # <7天 1.5% → 实收 738.75
+    assert sell_fees("FUND", D(750), 10)[2] == D("746.25")           # 7~30天 0.5%
+    assert sell_fees("FUND", D(750), 40)[2] == D(750)               # ≥30天 免赎回费
+    # 股票卖出：佣金+印花税(单边)+过户费
+    assert sell_fees("STOCK", D(1440), None)[2] == D("1434.25")      # 1440-5-0.72-0.03
+    print("invest self-check OK: 加权平均成本/已实现/未实现/清仓归零/手续费(申赎股票) 全部通过")

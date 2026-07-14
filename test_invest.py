@@ -64,25 +64,31 @@ def run():
     ra = api("POST", "/api/invest/assess", INV, json={"ident": c["id_no"], "q1": "5", "q2": "5", "q3": "5", "q4": "5", "q5": "5"})
     ok("604 风险测评→5级 [正常流]", OK(ra) and ra["data"]["risk_level"] == 5)
 
-    # 申购：1500 元 @ 净值1.50 → 1000 份
+    # 申购：1500 元 @ 净值1.50，基金申购费0.15%外扣 → 净申购1497.75/1.50 ≈ 998.5 份
     b = api("POST", "/api/invest/buy", INV, json={"ident": c["id_no"], "product_code": "000001", "amount": "1500"})
-    ok("605 申购成功(1500元→1000份) [正常流]", OK(b) and abs(b["data"]["units"] - 1000) < 0.001)
+    ok("605 申购成功(1500元扣0.15%申购费2.25→998.5份) [正常流]",
+       OK(b) and abs(b["data"]["units"] - 998.5) < 0.001
+       and abs(b["data"]["fee"] - 2.25) < 0.01 and abs(b["data"]["total_debit"] - 1500) < 0.01)
     ok("605 申购超余额→E-BAL [边界]", E(api("POST", "/api/invest/buy", INV, json={"ident": c["id_no"], "product_code": "000001", "amount": "9999999"})) == "E-BAL")
     ok("605 金额0→E-AMT [边界]", E(api("POST", "/api/invest/buy", INV, json={"ident": c["id_no"], "product_code": "000001", "amount": "0"})) == "E-AMT")
     # 货币换算：AAPL 当日折 CNY = 200×7.2 = 1440；买 1440 元 → 1 份
     aapl = api("POST", "/api/invest/buy", INV, json={"ident": c["id_no"], "product_code": "AAPL", "amount": "1440"})
-    ok("605 美股申购货币换算(1440元→1份) [组合]", OK(aapl) and abs(aapl["data"]["units"] - 1) < 0.001 and abs(aapl["data"]["price_cny"] - 1440) < 0.01)
+    ok("605 美股申购货币换算(1440元→1份,A股佣金保底5+过户费0.03) [组合]",
+       OK(aapl) and abs(aapl["data"]["units"] - 1) < 0.001 and abs(aapl["data"]["price_cny"] - 1440) < 0.01
+       and abs(aapl["data"]["fee"] - 5.03) < 0.01 and abs(aapl["data"]["total_debit"] - 1445.03) < 0.01)
 
-    # 持仓盈亏：总成本 = 1500 + 1440 = 2940
+    # 持仓盈亏：含费成本 = 基金1500 + 股票1445.03 = 2945.03
     h = api("GET", "/api/invest/holdings", INV, query={"ident": c["id_no"]})
-    ok("607 持仓查询 [正常流]", OK(h) and abs(h["data"]["summary"]["total_cost"] - 2940) < 0.01)
+    ok("607 持仓查询(含费成本1500+1445.03) [正常流]", OK(h) and abs(h["data"]["summary"]["total_cost"] - 2945.03) < 0.01)
     row = next((x for x in h["data"]["holdings"] if x["code"] == "000001"), None)
     ok("607 持仓含日/周/月/年价格变动 [组合]", row and row.get("year_pct") is not None)
     ok("607 未测评客户无持仓查询→仍返回(空) [判定]", OK(api("GET", "/api/invest/holdings", INV, query={"ident": open_acct()["id_no"]})))
 
-    # 赎回：卖 500 份 @ 1.50 → 到账 750
+    # 赎回：卖 500 份 @ 1.50，成交750；当日买卖持有<7天→赎回费1.5%=11.25，实收738.75
     s = api("POST", "/api/invest/sell", INV, json={"ident": c["id_no"], "product_code": "000001", "units": "500"})
-    ok("606 赎回500份→到账750 [正常流]", OK(s) and abs(s["data"]["proceeds"] - 750) < 0.01)
+    ok("606 赎回500份(<7天赎回费1.5%)→成交750实收738.75 [正常流]",
+       OK(s) and abs(s["data"]["amount_gross"] - 750) < 0.01
+       and abs(s["data"]["fee"] - 11.25) < 0.01 and abs(s["data"]["proceeds"] - 738.75) < 0.01)
     ok("606 超持仓赎回→E-UNITS [边界]", E(api("POST", "/api/invest/sell", INV, json={"ident": c["id_no"], "product_code": "000001", "units": "999999"})) == "E-UNITS")
     ok("606 无持仓赎回→E-NOHOLD [判定]", E(api("POST", "/api/invest/sell", INV, json={"ident": c["id_no"], "product_code": "110020", "units": "1"})) == "E-NOHOLD")
     ok("606 全部赎回成功 [边界]", OK(api("POST", "/api/invest/sell", INV, json={"ident": c["id_no"], "product_code": "000001", "all": True})))

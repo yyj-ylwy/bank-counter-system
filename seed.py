@@ -160,6 +160,7 @@ def _seed_holdings(db):
         db.invest_holding.update_one({"customer_id": zhang["_id"], "product_code": "000001"}, {"$set": {
             "customer_id": zhang["_id"], "product_code": "000001",
             "units": m4(500), "remaining_cost_cny": m(700), "realized_pnl_cny": m(0),
+            "first_buy_date": now() - timedelta(days=60),  # 已持有60天→赎回免赎回费
             "created_at": now()}}, upsert=True)
     if li:
         db.customer.update_one({"_id": li["_id"]}, {"$set": {"invest_risk_level": 2, "invest_risk_at": now()}})
