@@ -23,10 +23,13 @@ const ACTION_LABEL = {
   LOAN_REPAY: '贷款还款', LOAN_OVERDUE: '贷款逾期催收', LOAN_QUERY: '贷款查询',
   FX_OPEN: '外汇开户', FX_RATE_CONFIRM: '外汇牌价确认', FX_BUY: '买入外币', FX_SELL: '卖出外币',
   FX_FREEZE: '外汇账户冻结', FX_UNFREEZE: '外汇账户解冻', FX_CLOSE: '外汇账户关闭', FX_REBIND: '外汇改绑账户', FX_QUERY: '外汇查询', FX_RATE_QUERY: '外汇实时汇率查询', FX_RATE_SYNC: '外汇实时挂牌',
-  CC_APPLY: '信用卡申请', CC_APPROVE: '信用卡审批通过', CC_REJECT: '信用卡审批拒绝', CC_BILL: '信用卡账单生成',
-  CC_REPAY: '信用卡还款', CC_CASH_ADVANCE: '预借现金',
+  CC_APPLY: '信用卡申请', CC_APPROVE: '信用卡审批通过', CC_REJECT: '信用卡审批拒绝',
+  CC_REPAY: '信用卡还款', CC_CONSUME: '信用卡消费', CC_RECORDS: '消费记录查询',
+  CC_LIMIT_REQUEST: '提额申请', CC_LIMIT_APPROVE: '提额审批通过', CC_LIMIT_REJECT: '提额审批拒绝',
+  CC_REDEEM: '积分兑换',
   CC_LOSS: '信用卡挂失', CC_FREEZE: '信用卡冻结', CC_UNFREEZE: '信用卡解冻', CC_REISSUE: '信用卡补卡',
   CC_EXCEPTION: '信用卡异常登记', CC_CARD: '信用卡卡片操作',
+  CC_BILL: '信用卡账单生成', CC_CASH_ADVANCE: '预借现金',
   USER_CREATE: '新建操作员', USER_UPDATE: '操作员信息变更', PARAM_UPDATE: '系统参数修改',
   BACKUP: '数据备份', RESTORE: '数据恢复', CHANGE_PASSWORD: '修改密码',
   INVEST_BUY: '理财申购', INVEST_SELL: '理财赎回', INVEST_REFRESH: '理财行情刷新',
@@ -57,6 +60,7 @@ const PARAM_NAME = {
   WITHDRAW_DAILY_LIMIT: '单日取款上限', TRANSFER_FEE_RATE: '转账手续费率',
   CC_CREDIT_LIMIT_MAX: '信用卡最高授信额度', CC_MIN_REPAY_RATE: '信用卡最低还款比例',
   CC_CASH_ADVANCE_FEE_RATE: '预借现金手续费率', CC_CASH_DAILY_LIMIT: '预借现金单日上限',
+  CC_MIN_INTEREST_RATE: '最低还款剩余本金月利率', CC_LIMIT_DEPOSIT_RATIO: '提额上限占存款比例',
   FX_SPREAD: '外汇挂牌点差',
 };
 const PARAM_OPTIONS = Object.entries(PARAM_NAME).map(([value, label]) => ({ value, label }));
@@ -271,49 +275,91 @@ const OPERATIONS = {
     },
   ],
 
-  // ================= 信用卡业务员 =================
+  // ================= 信用卡业务员（模仿汇丰香港：4 种卡 / 消费返现+积分 / 积分商城）=================
   CREDIT_CARD_CLERK: [
     {
       code: 'UC-401', name: '信用卡申请办理', method: 'POST', path: '/api/creditcard/apply',
-      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }, { n: 'card_type', label: '卡片类型', type: 'select', options: ['普卡', '金卡', '白金卡'] }, { n: 'occupation', label: '职业' }, { n: 'monthly_income', label: '月收入', type: 'number' }],
-      result: d => kv({ '卡号': d.credit_card.card_no, '状态': d.credit_card.status_label }),
+      fields: [
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
+        { n: 'card_type', label: '卡片类型', type: 'select', options: ['银联白金卡', '银联钻石卡', 'Visa Platinum', 'MasterCard World Elite'] },
+        { n: 'occupation', label: '职业' }, { n: 'monthly_income', label: '月收入', type: 'number' },
+      ],
+      result: d => kv({ '卡号': d.credit_card.card_no, '卡种': d.credit_card.card_type, '卡组织': d.credit_card.network, '币种': d.credit_card.currency, '状态': d.credit_card.status_label }),
     },
     {
-      code: 'UC-402', name: '审核与额度设定', method: 'POST', path: '/api/creditcard/approve',
+      code: 'UC-402', name: '审批（新卡 / 提额 同一处）', method: 'POST', path: '/api/creditcard/approve',
       fields: [
         { n: 'card_no', label: '信用卡号', required: true },
         { n: 'decision', label: '审批结论', type: 'select', options: [{ value: '', label: '请选择审批结论' }, { value: 'APPROVED', label: '通过' }, { value: 'REJECTED', label: '拒绝' }] },
-        { n: 'credit_limit', label: '授信额度（可透支上限）', type: 'number', hint: '审批通过时必填' }, { n: 'bill_day', label: '账单日', type: 'number', hint: '每月几号出账单，填 1-28' }, { n: 'repay_day', label: '还款日', type: 'number', hint: '每月几号前还款，填 1-28' }, { n: 'reason', label: '拒绝原因', hint: '仅拒绝时填写' },
+        { n: 'bill_day', label: '账单日', type: 'number', hint: '新卡审批填，每月几号出账单 1-28' },
+        { n: 'repay_day', label: '还款日', type: 'number', hint: '新卡审批填，每月几号前还款 1-28' },
+        { n: 'reason', label: '拒绝原因', hint: '仅拒绝时填写' },
       ],
+      hint: '新卡审批按卡种默认额度激活；提额审批新额度不得高于存款的 30%。',
       result: d => {
         if (!d.credit_card) return '';
-        const c = d.credit_card, base = { '卡号': c.card_no, '状态': c.status_label };
-        if (c.status === 'REJECTED') base['拒绝原因'] = c.reject_reason || '-';
-        else { base['授信额度'] = money(c.credit_limit); base['账单日'] = c.bill_day; base['还款日'] = c.repay_day; }
+        const c = d.credit_card, base = { '卡号': c.card_no, '卡种': c.card_type, '状态': c.status_label };
+        if (c.reject_reason) base['拒绝原因'] = c.reject_reason;
+        base['授信额度'] = money(c.credit_limit) + ' ' + c.currency;
+        base['可用额度'] = money(c.available_limit) + ' ' + c.currency;
+        if (c.bill_day) { base['账单日'] = c.bill_day; base['还款日'] = c.repay_day; }
+        if (c.limit_req) base['提额申请'] = money(c.limit_req.new_limit) + ' / ' + c.limit_req.status;
         return kv(base);
       },
     },
     {
-      code: 'UC-403', name: '账单生成', method: 'POST', path: '/api/creditcard/bill',
-      fields: [{ n: 'card_no', label: '信用卡号', required: true }, { n: 'bill_cycle', label: '账期', hint: '填年月，如 202607；留空取当月' }],
-      result: d => kv({ '账期': billCycle(d.bill.bill_cycle), '应还总额': money(d.bill.total_amount), '最低还款': money(d.bill.min_repay), '还款截止': d.bill.due_date, '状态': d.bill.status_label }),
-    },
-    {
-      code: 'UC-404', name: '还款处理', method: 'POST', path: '/api/creditcard/repay',
+      code: 'UC-403', name: '提高信用额申请', method: 'POST', path: '/api/creditcard/increase-limit',
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
-        { n: 'repay_type', label: '还款方式', type: 'select', options: [{ value: 'FULL', label: '全额还款' }, { value: 'MIN', label: '最低还款' }, { value: 'PARTIAL', label: '部分还款' }] },
-        { n: 'amount', label: '还款金额(部分还款填)', type: 'number' },
+        { n: 'new_limit', label: '新授信额度', type: 'number', required: true, hint: '须高于当前额度；审批时不得超过存款的 30%' },
+        { n: 'reason', label: '申请理由' },
       ],
-      result: d => kv({ '账期': billCycle(d.bill.bill_cycle), '账单状态': d.bill.status_label, '已还': money(d.bill.paid_amount), '剩余': money(d.bill.remaining), '可用额度': money(d.credit_card.available_limit) }),
+      result: d => kv({ '卡号': d.credit_card.card_no, '当前额度': money(d.credit_card.credit_limit) + ' ' + d.credit_card.currency, '申请额度': d.credit_card.limit_req ? money(d.credit_card.limit_req.new_limit) + ' ' + d.credit_card.currency : '-', '申请状态': d.credit_card.limit_req ? d.credit_card.limit_req.status : '-' }),
     },
     {
-      code: 'UC-405', name: '预借现金处理', method: 'POST', path: '/api/creditcard/cash-advance',
-      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }, { n: 'amount', label: '取现金额', type: 'number', required: true }, { n: 'payout_account', label: '转入储蓄账号', hint: '留空表示以现金支付' }],
-      result: d => kv({ '手续费': money(d.fee), '出款方式': d.payout, '剩余可用额度': money(d.available_limit), '流水号': d.txn.txn_no }),
+      code: 'UC-404', name: '模拟消费（自定义币种+金额）', method: 'POST', path: '/api/creditcard/consume',
+      fields: [
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
+        { n: 'currency', label: '消费币种', type: 'select', options: [{ value: 'CNY', label: '人民币(CNY)' }].concat(CURRENCIES) },
+        { n: 'amount', label: '消费金额', type: 'number', required: true },
+        { n: 'merchant', label: '商户/备注' },
+      ],
+      hint: '消费金额按实时汇率折算为本卡币种扣减可用额度；跨币种收外币交易费（银联1%/Visa1.95%，World Elite 免除）。银联卡返现入人民币储蓄账户，Visa/万事达返积分。',
+      result: d => kv({ '原始消费': d.orig, '折本卡': money(d.card_amount) + ' ' + d.card_currency, '外币交易费': money(d.fee) + ' ' + d.card_currency, '奖励': d.reward.type === 'CASHBACK' ? ('返现 ' + money(d.reward.cashback) + ' 元→' + d.reward.account_no) : (d.reward.type === 'POINTS' ? ('积分 +' + d.reward.points) : '无'), '剩余可用额度': money(d.available_limit) + ' ' + d.card_currency, '流水号': d.txn.txn_no }),
     },
     {
-      code: 'UC-406', name: '挂失/补卡/异常', method: 'POST', path: '/api/creditcard/card',
+      code: 'UC-405', name: '还款处理（提前/按期/最低额）', method: 'POST', path: '/api/creditcard/repay',
+      fields: [
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
+        { n: 'repay_type', label: '还款方式', type: 'select', options: [{ value: 'FULL', label: '提前还款(全额结清)' }, { value: 'SCHEDULED', label: '按期还款(指定金额)' }, { value: 'MIN', label: '按期最低额还款' }] },
+        { n: 'amount', label: '还款金额（按期还款填）', type: 'number' },
+      ],
+      hint: '人民币卡用人民币储蓄账户还，美元卡用美元外汇子户还；多还部分退回。最低额还款的剩余本金按月利率 5% 计息。',
+      result: d => kv({ '卡号': d.credit_card.card_no, '本次还款': money(d.pay) + ' ' + d.currency, '还款来源': d.fund, '循环利息': money(d.interest) + ' ' + d.currency, '剩余欠款': money(d.outstanding) + ' ' + d.currency, '可用额度': money(d.available_limit) + ' ' + d.currency }),
+    },
+    {
+      code: 'UC-406', name: '本月消费记录', method: 'GET', path: '/api/creditcard/records',
+      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }],
+      result: d => kv({ '卡号': d.credit_card.card_no, '卡种': d.credit_card.card_type, '账月': d.month, '本月消费合计': money(d.consume_total) + ' ' + d.credit_card.currency, '授信额度': money(d.credit_card.credit_limit) + ' ' + d.credit_card.currency, '剩余可用额度': money(d.credit_card.available_limit) + ' ' + d.credit_card.currency })
+        + (d.records.length ? '<h4>本月明细</h4>' + tbl(d.records, [{ k: 'txn_time', label: '时间' }, { k: 'business_label', label: '类型' }, { k: 'amount', label: '金额', fmt: money }, { k: 'currency', label: '币种' }, { k: 'orig', label: '原始消费' }, { k: 'merchant', label: '商户' }]) : '<p>本月暂无记录</p>'),
+    },
+    {
+      code: 'UC-407', name: '积分商城', method: 'GET', path: '/api/creditcard/mall',
+      fields: [{ n: 'ident', label: '身份标识（查积分/兑换记录）', hint: '证件号/邮箱/手机号/账号/卡号，任填其一；留空只看奖品' }],
+      result: d => (d.customer_name ? kv({ '客户': d.customer_name, '当前积分': d.points }) : '')
+        + '<h4>奖品清单</h4>' + tbl(d.prizes, [{ k: 'name', label: '奖品' }, { k: 'points', label: '所需积分' }, { k: 'desc', label: '说明' }])
+        + (d.redemptions && d.redemptions.length ? '<h4>兑换记录</h4>' + tbl(d.redemptions, [{ k: 'time', label: '时间' }, { k: 'prize_name', label: '奖品' }, { k: 'points', label: '积分' }]) : ''),
+    },
+    {
+      code: 'UC-408', name: '积分兑换奖品', method: 'POST', path: '/api/creditcard/redeem',
+      fields: [
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
+        { n: 'prize_id', label: '兑换奖品', type: 'select', options: [{ value: 'FLIGHT_INTL', label: '国际机票兑换券(80000)' }, { value: 'FLIGHT_DOM', label: '国内机票兑换券(40000)' }, { value: 'HOTEL_5S', label: '五星酒店住宿券(30000)' }, { value: 'PICKUP_CAR', label: '接机专车服务券(15000)' }, { value: 'LOUNGE', label: '机场贵宾厅通行券(8000)' }] },
+      ],
+      result: d => kv({ '兑换奖品': d.prize, '消耗积分': d.cost, '剩余积分': d.points_remain }),
+    },
+    {
+      code: 'UC-409', name: '挂失/补卡/冻结/异常', method: 'POST', path: '/api/creditcard/card',
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
         { n: 'op', label: '操作', type: 'select', options: [{ value: 'LOSS', label: '挂失' }, { value: 'REISSUE', label: '补卡' }, { value: 'FREEZE', label: '冻结' }, { value: 'UNFREEZE', label: '解冻' }, { value: 'EXCEPTION', label: '异常登记' }] },
@@ -324,8 +370,7 @@ const OPERATIONS = {
     {
       code: 'UC-4Q', name: '信用卡查询', method: 'GET', path: '/api/creditcard/query',
       fields: [{ n: 'ident', label: '身份标识', hint: '证件号/邮箱/手机号/账号/卡号，任填其一' }],
-      result: d => d.cards.map(c => kv({ '卡号': c.card_no, '客户': c.customer_name || '-', '状态': c.status_label, '授信额度': money(c.credit_limit), '可用额度': money(c.available_limit), '已用额度': money(c.used), '可用还款/出款账号': (c.repay_accounts && c.repay_accounts.length ? c.repay_accounts.join('、') : '（该客户暂无正常储蓄账户）') })
-        + (c.bills.length ? '<h4>账单</h4>' + tbl(c.bills, [{ k: 'bill_cycle', label: '账期', fmt: billCycle }, { k: 'total_amount', label: '应还', fmt: money }, { k: 'paid_amount', label: '已还', fmt: money }, { k: 'status_label', label: '状态' }]) : '')).join('<hr>'),
+      result: d => d.cards.map(c => kv({ '卡号': c.card_no, '卡种': c.card_type, '卡组织': c.network, '币种': c.currency, '客户': c.customer_name || '-', '积分': c.points, '状态': c.status_label, '授信额度': money(c.credit_limit) + ' ' + c.currency, '可用额度': money(c.available_limit) + ' ' + c.currency, '已用额度': money(c.used) + ' ' + c.currency, '返现比例': pct(c.cashback_rate), '每单位积分': c.points_per_unit, '外币交易费': c.waive_fx_fee ? '免除' : pct(c.fx_fee_rate), '提额申请': c.limit_req ? (money(c.limit_req.new_limit) + ' / ' + c.limit_req.status) : '无', '可用还款账户': (c.repay_accounts && c.repay_accounts.length ? c.repay_accounts.join('、') : '（暂无）') })).join('<hr>'),
     },
   ],
 

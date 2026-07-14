@@ -400,6 +400,7 @@ def customer_view(cust):
         "phone": cust.get("phone"),
         "address": cust.get("address"),
         "occupation": cust.get("occupation"),
+        "points": int(cust.get("points", 0) or 0),   # 信用卡积分
         "status": cust["status"],
         "status_label": C.CUSTOMER_STATUS_LABEL.get(cust["status"], "未知"),
     }

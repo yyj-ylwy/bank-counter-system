@@ -49,6 +49,8 @@ DEFAULT_PARAMS = [
     ("RATE", C.P_CC_MIN_REPAY_RATE, "0.10"),
     ("RATE", C.P_CC_CASH_FEE_RATE, "0.01"),
     ("LIMIT", C.P_CC_CASH_DAILY_LIMIT, "20000"),
+    ("RATE", C.P_CC_MIN_INTEREST_RATE, "0.05"),         # 最低还款后剩余本金月利率 5%
+    ("RATE", C.P_CC_LIMIT_DEPOSIT_RATIO, "0.30"),       # 提额上限 = 存款 × 30%
     ("RATE", C.P_FX_SPREAD, "0.003"),   # 外汇挂牌点差 0.3%
 ]
 
@@ -102,6 +104,7 @@ def run_seed():
                 "email": email,
                 "phone": phone,
                 "status": C.CUSTOMER_NORMAL,
+                "points": 0,   # 信用卡积分，开户初始 0
                 "created_at": now(),
             }
             cid = db.customer.insert_one(cust).inserted_id

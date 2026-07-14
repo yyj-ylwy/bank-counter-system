@@ -84,6 +84,10 @@ TXN_CC_REPAY = "CC_REPAY"               # 信用卡还款
 TXN_CC_CASH = "CC_CASH_ADVANCE"         # 预借现金
 TXN_CC_CASH_FEE = "CC_CASH_FEE"         # 预借现金手续费
 TXN_CC_CASH_PAYOUT = "CC_CASH_PAYOUT"   # 预借现金转入储蓄账户（账户侧入账流水）
+TXN_CC_CONSUME = "CC_CONSUME"           # 信用卡消费（扣可用额度）
+TXN_CC_FX_FEE = "CC_FX_FEE"             # 外币交易手续费
+TXN_CC_CASHBACK = "CC_CASHBACK"         # 消费返现（入人民币储蓄账户）
+TXN_CC_INTEREST = "CC_INTEREST"         # 最低还款后剩余本金循环利息
 TXN_INVEST_BUY = "INVEST_BUY"           # 理财申购（买入，扣储蓄账户）
 TXN_INVEST_SELL = "INVEST_SELL"         # 理财赎回（卖出，入储蓄账户）
 
@@ -117,6 +121,8 @@ P_CC_LIMIT_MAX = "CC_CREDIT_LIMIT_MAX"          # 信用卡授信额度上限
 P_CC_MIN_REPAY_RATE = "CC_MIN_REPAY_RATE"       # 最低还款比例
 P_CC_CASH_FEE_RATE = "CC_CASH_ADVANCE_FEE_RATE" # 预借现金手续费率
 P_CC_CASH_DAILY_LIMIT = "CC_CASH_DAILY_LIMIT"   # 预借现金单日限额
+P_CC_MIN_INTEREST_RATE = "CC_MIN_INTEREST_RATE" # 最低还款后剩余本金月利率（每月累计）
+P_CC_LIMIT_DEPOSIT_RATIO = "CC_LIMIT_DEPOSIT_RATIO"  # 提额上限占存款比例（新额度≤存款×该比例）
 P_FX_SPREAD = "FX_SPREAD"                       # 外汇挂牌点差（买卖各偏离中间价的比例，如 0.003=0.3%）
 
 # 证件类型
@@ -124,7 +130,44 @@ ID_TYPES = ["身份证", "护照", "港澳通行证", "军官证"]
 
 # ---- 输入校验用的枚举白名单与上限 ----
 LOAN_TYPES = ["个人消费贷", "住房贷款", "经营贷款", "汽车贷款"]
-CARD_TYPES = ["普卡", "金卡", "白金卡"]
+
+# ---- 信用卡卡种规格（模仿汇丰香港）----
+# currency        计价/结算币种（人民币卡 CNY / 美元卡 USD）
+# default_limit   默认授信额度（本卡币种）
+# network         卡组织
+# cashback_rate   消费返现比例（银联卡有，返现入人民币储蓄账户；Visa/万事达为 0）
+# points_per_unit 每消费 1 单位本卡币种所得积分（Visa/万事达有；银联为 0）
+# fx_fee_rate     外币交易手续费率（消费币种≠本卡币种时收取）
+# waive_fx_fee    是否免收外币交易手续费（World Elite 免除）
+CARD_UNIONPAY_PLATINUM = "银联白金卡"
+CARD_UNIONPAY_DIAMOND = "银联钻石卡"
+CARD_VISA_PLATINUM = "Visa Platinum"
+CARD_MASTERCARD_ELITE = "MasterCard World Elite"
+CARD_SPECS = {
+    CARD_UNIONPAY_PLATINUM: {"currency": "CNY", "default_limit": "20000", "network": "银联",
+                             "cashback_rate": "0.024", "points_per_unit": "0",
+                             "fx_fee_rate": "0.01", "waive_fx_fee": False},
+    CARD_UNIONPAY_DIAMOND: {"currency": "CNY", "default_limit": "100000", "network": "银联",
+                            "cashback_rate": "0.044", "points_per_unit": "0",
+                            "fx_fee_rate": "0.01", "waive_fx_fee": False},
+    CARD_VISA_PLATINUM: {"currency": "USD", "default_limit": "20000", "network": "Visa",
+                         "cashback_rate": "0", "points_per_unit": "7",
+                         "fx_fee_rate": "0.0195", "waive_fx_fee": False},
+    CARD_MASTERCARD_ELITE: {"currency": "USD", "default_limit": "50000", "network": "MasterCard",
+                            "cashback_rate": "0", "points_per_unit": "10",
+                            "fx_fee_rate": "0", "waive_fx_fee": True},
+}
+CARD_TYPES = list(CARD_SPECS.keys())
+
+# ---- 积分商城奖品（信用卡模块内，积分兑换）----
+CC_PRIZES = [
+    {"id": "FLIGHT_INTL", "name": "国际航线机票兑换券", "points": 80000, "desc": "经济舱国际单程机票"},
+    {"id": "FLIGHT_DOM", "name": "国内航线机票兑换券", "points": 40000, "desc": "经济舱国内单程机票"},
+    {"id": "HOTEL_5S", "name": "五星级酒店住宿券", "points": 30000, "desc": "五星酒店标准间 1 晚"},
+    {"id": "PICKUP_CAR", "name": "接机专车服务券", "points": 15000, "desc": "机场接机专车 1 次"},
+    {"id": "LOUNGE", "name": "机场贵宾厅通行券", "points": 8000, "desc": "机场贵宾厅 1 次"},
+]
+CC_PRIZE_MAP = {p["id"]: p for p in CC_PRIZES}
 LOAN_AMOUNT_MAX = 100_000_000   # 单笔贷款金额上限（1 亿），防误输天文数字
 TXN_AMOUNT_MAX = 100_000_000    # 单笔存/取/转账金额上限（1 亿），防天文数字与大写溢出
 LOAN_TERM_MAX = 360             # 贷款期限上限（月），防到期日计算溢出
@@ -133,11 +176,13 @@ TEXT_MAX = 200                  # 备注/原因等自由文本长度上限
 ALLOWED_PARAM_KEYS = (
     {k for pair in PARAM_FX.values() for k in pair}
     | {P_LOAN_RATE, P_LOAN_OVERDUE_RATE, P_WITHDRAW_DAILY_LIMIT, P_TRANSFER_FEE_RATE,
-       P_CC_LIMIT_MAX, P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_CC_CASH_DAILY_LIMIT, P_FX_SPREAD}
+       P_CC_LIMIT_MAX, P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_CC_CASH_DAILY_LIMIT,
+       P_CC_MIN_INTEREST_RATE, P_CC_LIMIT_DEPOSIT_RATIO, P_FX_SPREAD}
 )
 # 属于"比例/费率"的参数键（业务上应落在 0~1），维护时额外做上限校验
 RATE_PARAM_KEYS = {P_LOAN_RATE, P_LOAN_OVERDUE_RATE, P_TRANSFER_FEE_RATE,
-                   P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_FX_SPREAD}
+                   P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_CC_MIN_INTEREST_RATE,
+                   P_CC_LIMIT_DEPOSIT_RATIO, P_FX_SPREAD}
 
 # ---- 状态/类型的中文标签（前端展示用）----
 ACCOUNT_STATUS_LABEL = {1: "正常", 2: "挂失", 3: "冻结", 4: "销户"}
@@ -160,6 +205,8 @@ TXN_TYPE_LABEL = {
     "LOAN_DISBURSE": "放款", "LOAN_REPAY": "贷款还款", "FX_BUY": "买入外币",
     "FX_SELL": "卖出外币", "CC_REPAY": "信用卡还款", "CC_CASH_ADVANCE": "预借现金",
     "CC_CASH_FEE": "预借现金手续费", "CC_CASH_PAYOUT": "预借现金入账",
+    "CC_CONSUME": "信用卡消费", "CC_FX_FEE": "外币交易手续费",
+    "CC_CASHBACK": "消费返现", "CC_INTEREST": "循环利息",
     "INVEST_BUY": "理财申购", "INVEST_SELL": "理财赎回",
 }
 

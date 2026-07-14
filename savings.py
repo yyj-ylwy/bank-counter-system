@@ -68,7 +68,7 @@ def open_account():
             cust = {
                 "customer_no": new_customer_no(s), "name": name, "id_type": id_type,
                 "id_no": id_no, "email": email, "phone": phone,
-                "status": C.CUSTOMER_NORMAL, "created_at": now(),
+                "status": C.CUSTOMER_NORMAL, "points": 0, "created_at": now(),
             }
             cid = db.customer.insert_one(cust, session=s).inserted_id
             cust["_id"] = cid

@@ -321,81 +321,96 @@ def t_forex():
     ok("305 正常查询成功 [正常流]", OK(api("GET", "/api/forex/query", FX, query={"ident": fxno})))
 
 
-# ==================== 信用卡 UC-401 ~ 406 + 4Q ====================
+# ==================== 信用卡（4卡种/消费返现+积分/积分商城/多币种还款）====================
 def t_creditcard():
-    print("== 信用卡业务 UC-401~406 ==")
+    print("== 信用卡业务（模仿汇丰香港重做）==")
+    # ---------- 人民币卡：银联白金卡 全流程（消费返现 2.4% + 提额 + 还款）----------
     cust = open_acct(bal="50000")
-    cno = cust["customer_no"]
     cid = cust["id_no"]
     ok("401 客户不存在→E-NOCUST [判定]", E(api("POST", "/api/creditcard/apply", CCK, json={"ident": gen_id()})) == "E-NOCUST")
-    ok("401 卡种非法→E-OP [判定]", E(api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "钻石卡"})) == "E-OP")
-    ok("401 月收入负→E-VAL [边界]", E(api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "普卡", "monthly_income": "-1"})) == "E-VAL")
-    ok("401 月收入非数字→E-VAL [判定]", E(api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "普卡", "monthly_income": "abc"})) == "E-VAL")
-    r = api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "普卡", "monthly_income": "8000"})
-    ok("401 正常申请成功 [正常流]", OK(r))
+    ok("401 旧卡种非法→E-OP [判定]", E(api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "普卡"})) == "E-OP")
+    ok("401 月收入负→E-VAL [边界]", E(api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "银联白金卡", "monthly_income": "-1"})) == "E-VAL")
+    r = api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "银联白金卡", "monthly_income": "8000"})
     card = r["data"]["credit_card"]["card_no"]
+    ok("401 银联白金卡申请成功&币种CNY [正常流]", OK(r) and r["data"]["credit_card"]["currency"] == "CNY")
 
-    # UC-402 审批（用 card_no 定位申请单）
+    # UC-402 审批（新卡按卡种默认额度 20000 激活；无需录入额度）
     ok("402 卡不存在→E-NOCARD [判定]", E(api("POST", "/api/creditcard/approve", CCK, json={"card_no": "X", "decision": "APPROVED"})) == "E-NOCARD")
     ok("402 决策非法→E-OP [判定]", E(api("POST", "/api/creditcard/approve", CCK, json={"card_no": card, "decision": "MAYBE"})) == "E-OP")
-    ok("402 额度0→E-1 [边界]", E(api("POST", "/api/creditcard/approve", CCK, json={"card_no": card, "decision": "APPROVED", "credit_limit": "0", "bill_day": "5", "repay_day": "20"})) == "E-1")
-    ok("402 账单日越界→E-DAY [边界]", E(api("POST", "/api/creditcard/approve", CCK, json={"card_no": card, "decision": "APPROVED", "credit_limit": "20000", "bill_day": "30", "repay_day": "20"})) == "E-DAY")
-    ok("402 审批激活成功 [正常流]", OK(api("POST", "/api/creditcard/approve", CCK, json={"card_no": card, "decision": "APPROVED", "credit_limit": "20000", "bill_day": "5", "repay_day": "20"})))
-    rcard = api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "普卡"})["data"]["credit_card"]["card_no"]
+    ok("402 账单日越界→E-DAY [边界]", E(api("POST", "/api/creditcard/approve", CCK, json={"card_no": card, "decision": "APPROVED", "bill_day": "30", "repay_day": "20"})) == "E-DAY")
+    ok("402 审批激活(默认额度) [正常流]", OK(api("POST", "/api/creditcard/approve", CCK, json={"card_no": card, "decision": "APPROVED", "bill_day": "5", "repay_day": "20"})))
+    q = api("GET", "/api/creditcard/query", CCK, query={"ident": card})
+    ok("402 激活后默认额度=20000 [金额]", OK(q) and q["data"]["cards"][0]["credit_limit"] == 20000.0 and q["data"]["cards"][0]["available_limit"] == 20000.0)
+    rcard = api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "银联白金卡"})["data"]["credit_card"]["card_no"]
     rj = api("POST", "/api/creditcard/approve", CCK, json={"card_no": rcard, "decision": "REJECTED", "reason": "资料不足"})
     ok("402 拒绝返回数据+原因 [判定]", OK(rj) and rj.get("data", {}).get("credit_card", {}).get("reject_reason") == "资料不足")
 
-    # UC-405 预借现金（先测，制造账单；repay/cash-advance 用 ident 定位卡与出款账户）
-    ok("405 取现0→E-AMT [边界]", E(api("POST", "/api/creditcard/cash-advance", CCK, json={"ident": card, "amount": "0"})) == "E-AMT")
-    ok("405 未找到卡→E-NOCUST [判定]", E(api("POST", "/api/creditcard/cash-advance", CCK, json={"ident": gen_id(), "amount": "100"})) == "E-NOCUST")
-    ok("405 出款账户非本人→E-OWNER [组合]", E(api("POST", "/api/creditcard/cash-advance", CCK, json={"ident": card, "amount": "100", "payout_account": open_acct()["account_no"]})) == "E-OWNER")
-    q405 = api("GET", "/api/creditcard/query", CCK, query={"ident": card})
-    ok("405 出款校验失败未扣额度(先校验后动账) [资金]", OK(q405) and q405["data"]["cards"][0]["available_limit"] == 20000.0)
-    ok("405 现金取现成功 [正常流]", OK(api("POST", "/api/creditcard/cash-advance", CCK, json={"ident": card, "amount": "1000"})))
+    # UC-404 模拟消费（自定义币种+金额，真实扣额度；银联白金返现 2.4%→人民币储蓄账户）
+    ok("404 消费币种非法→E-CUR [判定]", E(api("POST", "/api/creditcard/consume", CCK, json={"ident": card, "currency": "ABC", "amount": "100"})) == "E-CUR")
+    ok("404 消费金额0→E-AMT [边界]", E(api("POST", "/api/creditcard/consume", CCK, json={"ident": card, "currency": "CNY", "amount": "0"})) == "E-AMT")
+    rcon = api("POST", "/api/creditcard/consume", CCK, json={"ident": card, "currency": "CNY", "amount": "1000", "merchant": "测试商户"})
+    ok("404 人民币消费成功&扣额度 [正常流]", OK(rcon) and abs(rcon["data"]["available_limit"] - 19000.0) < 0.01)
+    ok("404 银联白金返现2.4%(=24) [金额]", OK(rcon) and rcon["data"]["reward"]["type"] == "CASHBACK" and abs(rcon["data"]["reward"]["cashback"] - 24.0) < 0.01)
+    ok("404 超出可用额度→E-2 [边界]", E(api("POST", "/api/creditcard/consume", CCK, json={"ident": card, "currency": "CNY", "amount": "999999"})) == "E-2")
 
-    # UC-403 账单（card_no 定位）
-    ok("403 卡不存在→E-NOCARD [判定]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": "X"})) == "E-NOCARD")
-    ok("403 账期格式非法→E-CYCLE [判定]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": card, "bill_cycle": "2024-13"})) == "E-CYCLE")
-    ok("403 账期月份13→E-CYCLE [边界]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": card, "bill_cycle": "202413"})) == "E-CYCLE")
-    ok("403 未来账期→E-CYCLE [边界]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": card, "bill_cycle": "209912"})) == "E-CYCLE")
-    r = api("POST", "/api/creditcard/bill", CCK, json={"card_no": card})
-    ok("403 账单生成成功(有取现) [正常流]", OK(r))
-    ok("403 账期重复→E-DUP [判定]", E(api("POST", "/api/creditcard/bill", CCK, json={"card_no": card})) == "E-DUP")
-    # 回归验证：先出早期空账单，再取现，后续账单仍能归集该取现（不被永久锁死）
-    rc2 = api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "普卡"})["data"]["credit_card"]["card_no"]
-    api("POST", "/api/creditcard/approve", CCK, json={"card_no": rc2, "decision": "APPROVED", "credit_limit": "20000", "bill_day": "5", "repay_day": "20"})
-    api("POST", "/api/creditcard/bill", CCK, json={"card_no": rc2, "bill_cycle": "202001"})  # 早期空账单
-    api("POST", "/api/creditcard/cash-advance", CCK, json={"ident": rc2, "amount": "500"})
-    rbill = api("POST", "/api/creditcard/bill", CCK, json={"card_no": rc2})  # 当月账单应归集该取现
-    ok("403 空账单后取现仍能入账(修回归) [资金]", OK(rbill) and rbill["data"]["bill"]["total_amount"] > 0)
+    # UC-406 本月消费记录（本月消费明细 + 剩余额度）
+    rec = api("GET", "/api/creditcard/records", CCK, query={"ident": card})
+    ok("406 本月消费记录(合计=1000) [查询]", OK(rec) and abs(rec["data"]["consume_total"] - 1000.0) < 0.01 and len(rec["data"]["records"]) >= 1)
 
-    # UC-404 还款（有未还账单；ident 定位卡+还款账户，repay_type 控制方式）
-    ok("404 还款方式非法→E-OP [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "XX"})) == "E-OP")
-    ok("404 部分金额0→E-AMT [边界]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "PARTIAL", "amount": "0"})) == "E-AMT")
-    ok("404 首笔部分<最低→E-2 [组合]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "PARTIAL", "amount": "1"})) == "E-2")
-    ok("404 首笔部分(≥最低)成功 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "PARTIAL", "amount": "200"})))
-    ok("404 已部分后补小额(<最低)放行 [组合]", OK(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "PARTIAL", "amount": "50"})))
-    ok("404 全额还款成功 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "FULL"})))
-    ok("404 无待还账单→E-3 [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "FULL"})) == "E-3")
+    # UC-405 还款（提前/按期/最低额；人民币卡用人民币储蓄账户还）
+    ok("405 还款方式非法→E-OP [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "XX"})) == "E-OP")
+    ok("405 按期金额0→E-AMT [边界]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "SCHEDULED", "amount": "0"})) == "E-AMT")
+    ok("405 按期<最低额→E-2 [组合]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "SCHEDULED", "amount": "50"})) == "E-2")
+    rmin = api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "MIN"})
+    ok("405 最低额还款成功&剩余本金计息 [正常流]", OK(rmin) and rmin["data"]["interest"] > 0)
+    ok("405 提前(全额)还款结清 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "FULL"})))
+    ok("405 无欠款再还→E-3 [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": card, "repay_type": "FULL"})) == "E-3")
 
-    # UC-406 卡片操作（ident 定位；不存在卡→resolve E-NOCUST）
-    ok("406 卡不存在→E-NOCUST [判定]", E(api("POST", "/api/creditcard/card", CCK, json={"ident": "X", "op": "LOSS"})) == "E-NOCUST")
-    ok("406 op非法→E-OP [判定]", E(api("POST", "/api/creditcard/card", CCK, json={"ident": card, "op": "ZZ"})) == "E-OP")
-    ok("406 冻结成功 [判定]", OK(api("POST", "/api/creditcard/card", CCK, json={"ident": card, "op": "FREEZE"})))
-    ok("406 冻结态挂失成功 [条件]", OK(api("POST", "/api/creditcard/card", CCK, json={"ident": card, "op": "LOSS"})))
-    ok("406 补卡成功换新卡号 [正常流]", OK(api("POST", "/api/creditcard/card", CCK, json={"ident": card, "op": "REISSUE"})))
+    # UC-403 提额申请 + UC-402 提额审批（新额度不得高于存款的 30%）
+    ok("403 提额低于当前→E-1 [边界]", E(api("POST", "/api/creditcard/increase-limit", CCK, json={"ident": card, "new_limit": "15000"})) == "E-1")
+    ok("403 提额申请成功(挂起) [正常流]", OK(api("POST", "/api/creditcard/increase-limit", CCK, json={"ident": card, "new_limit": "25000"})))
+    ok("402 提额超存款30%被拒→E-1 [规则]", E(api("POST", "/api/creditcard/approve", CCK, json={"card_no": card, "decision": "APPROVED"})) == "E-1")
+    # 大额存款客户：银联钻石卡默认 10 万，提额至 12 万（≤ 50万×30%=15万）应通过
+    big = open_acct(bal="500000")
+    dcard = api("POST", "/api/creditcard/apply", CCK, json={"ident": big["id_no"], "card_type": "银联钻石卡"})["data"]["credit_card"]["card_no"]
+    api("POST", "/api/creditcard/approve", CCK, json={"card_no": dcard, "decision": "APPROVED", "bill_day": "5", "repay_day": "20"})
+    dq = api("GET", "/api/creditcard/query", CCK, query={"ident": dcard})
+    ok("402 钻石卡默认额度=100000 [金额]", OK(dq) and dq["data"]["cards"][0]["credit_limit"] == 100000.0)
+    api("POST", "/api/creditcard/increase-limit", CCK, json={"ident": dcard, "new_limit": "120000"})
+    dinc = api("POST", "/api/creditcard/approve", CCK, json={"card_no": dcard, "decision": "APPROVED"})
+    ok("402 提额审批通过(≤30%)&额度=120000 [规则]", OK(dinc) and dinc["data"]["credit_card"]["credit_limit"] == 120000.0)
 
-    # REISSUE 从冻结态补卡应保持冻结（不绕过风控）
-    fz = api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "普卡"})["data"]["credit_card"]["card_no"]
-    api("POST", "/api/creditcard/approve", CCK, json={"card_no": fz, "decision": "APPROVED", "credit_limit": "10000", "bill_day": "5", "repay_day": "20"})
-    api("POST", "/api/creditcard/card", CCK, json={"ident": fz, "op": "FREEZE"})
-    rr = api("POST", "/api/creditcard/card", CCK, json={"ident": fz, "op": "REISSUE"})
-    newcard = rr.get("data", {}).get("card_no")
-    fzq = api("GET", "/api/creditcard/query", CCK, query={"ident": newcard})
-    ok("406 冻结卡补卡后仍冻结 [状态机]", OK(fzq) and fzq["data"]["cards"][0]["status"] == "FROZEN")
+    # ---------- 美元卡：Visa Platinum（每消费 1 美元得 7 积分）----------
+    vc = open_acct(bal="1000")
+    vcard = api("POST", "/api/creditcard/apply", CCK, json={"ident": vc["id_no"], "card_type": "Visa Platinum"})["data"]["credit_card"]["card_no"]
+    vq0 = api("POST", "/api/creditcard/approve", CCK, json={"card_no": vcard, "decision": "APPROVED", "bill_day": "5", "repay_day": "20"})
+    ok("401 Visa 卡币种=USD&默认额度20000 [正常流]", OK(vq0) and vq0["data"]["credit_card"]["currency"] == "USD" and vq0["data"]["credit_card"]["credit_limit"] == 20000.0)
+    rvc = api("POST", "/api/creditcard/consume", CCK, json={"ident": vcard, "currency": "USD", "amount": "100"})
+    ok("404 Visa 消费得积分(100×7=700)&无外币费 [金额]", OK(rvc) and rvc["data"]["reward"]["type"] == "POINTS" and rvc["data"]["reward"]["points"] == 700 and rvc["data"]["fee"] == 0.0)
 
-    # UC-4Q 查询（统一 ident）
-    ok("4Q 按客户查到 [条件]", OK(api("GET", "/api/creditcard/query", CCK, query={"ident": cid})))
+    # 积分商城：查积分 + 兑换
+    mall = api("GET", "/api/creditcard/mall", CCK, query={"ident": vc["id_no"]})
+    ok("407 商城查积分(=700) [查询]", OK(mall) and mall["data"]["points"] == 700 and len(mall["data"]["prizes"]) >= 1)
+    ok("408 积分不足兑换→E-1 [判定]", E(api("POST", "/api/creditcard/redeem", CCK, json={"ident": vc["id_no"], "prize_id": "LOUNGE"})) == "E-1")
+    ok("408 奖品不存在→E-OP [判定]", E(api("POST", "/api/creditcard/redeem", CCK, json={"ident": vc["id_no"], "prize_id": "NOPE"})) == "E-OP")
+
+    # ---------- 美元卡：MasterCard World Elite（免外币交易费）----------
+    ec = open_acct(bal="1000")
+    ecard = api("POST", "/api/creditcard/apply", CCK, json={"ident": ec["id_no"], "card_type": "MasterCard World Elite"})["data"]["credit_card"]["card_no"]
+    api("POST", "/api/creditcard/approve", CCK, json={"card_no": ecard, "decision": "APPROVED", "bill_day": "5", "repay_day": "20"})
+    eq = api("GET", "/api/creditcard/query", CCK, query={"ident": ecard})
+    ok("402 Elite 默认额度50000&免外币费 [规则]", OK(eq) and eq["data"]["cards"][0]["credit_limit"] == 50000.0 and eq["data"]["cards"][0]["waive_fx_fee"] is True)
+
+    # UC-409 卡片操作 + 冻结态禁止消费
+    ok("409 op非法→E-OP [判定]", E(api("POST", "/api/creditcard/card", CCK, json={"ident": card, "op": "ZZ"})) == "E-OP")
+    ok("409 冻结成功 [判定]", OK(api("POST", "/api/creditcard/card", CCK, json={"ident": card, "op": "FREEZE"})))
+    ok("404 冻结态消费→E-1 [状态机]", E(api("POST", "/api/creditcard/consume", CCK, json={"ident": card, "currency": "CNY", "amount": "100"})) == "E-1")
+    ok("409 冻结态挂失成功 [条件]", OK(api("POST", "/api/creditcard/card", CCK, json={"ident": card, "op": "LOSS"})))
+    ok("409 挂失后补卡换新卡号 [正常流]", OK(api("POST", "/api/creditcard/card", CCK, json={"ident": card, "op": "REISSUE"})))
+    ok("409 卡不存在→E-NOCUST [判定]", E(api("POST", "/api/creditcard/card", CCK, json={"ident": "X", "op": "LOSS"})) == "E-NOCUST")
+
+    # 查询
+    ok("4Q 按卡号查到 [条件]", OK(api("GET", "/api/creditcard/query", CCK, query={"ident": vcard})))
     ok("4Q 未找到→E-1 [判定]", E(api("GET", "/api/creditcard/query", CCK, query={"ident": "X"})) == "E-1")
 
 
