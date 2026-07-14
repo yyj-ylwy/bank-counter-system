@@ -67,8 +67,8 @@ const ICONS = {
   'UC-201': '📋', 'UC-202': '✅', 'UC-203': '🏦', 'UC-204': '💵', 'UC-205': '⏰', 'UC-205b': '📞', 'UC-206': '📊',
   'UC-301': '🌐', 'UC-302': '💱', 'UC-303': '🔁', 'UC-304': '⚙️', 'UC-305': '🔍', 'UC-306': '📈', 'UC-307': '📌',
   'UC-401': '💳', 'UC-402': '✅', 'UC-403': '🧾', 'UC-404': '💵', 'UC-405': '🏧', 'UC-406': '🔒', 'UC-4Q': '🔍',
-  'UC-501': '👥', 'UC-501b': '➕', 'UC-501c': '✏️', 'UC-502': '⚙️', 'UC-502b': '🛠️', 'UC-503': '📜', 'UC-504': '💾', 'UC-504b': '♻️', 'UC-508': '🧺',
-  'UC-601': '🧾', 'UC-602': '📈', 'UC-603': '🔃', 'UC-604': '📝', 'UC-605': '🛒', 'UC-606': '💸', 'UC-607': '📊',
+  'UC-501': '👥', 'UC-501b': '➕', 'UC-501c': '✏️', 'UC-502': '⚙️', 'UC-502b': '🛠️', 'UC-503': '📜', 'UC-504': '💾', 'UC-504b': '♻️',
+  'UC-601': '🧾', 'UC-602': '📈', 'UC-603': '🔃', 'UC-604': '📝', 'UC-605': '🛒', 'UC-606': '💸', 'UC-607': '📊', 'UC-608': '🧺',
 };
 const icon = code => ICONS[code] || '▪️';
 // 每个用例的提交按钮文案：说清"按下会发生什么"（查询类统一"查询"，写入类"确认XX/保存XX"）。
@@ -79,8 +79,8 @@ const SUBMIT = {
   'UC-201': '提交申请', 'UC-202': '提交审批结论', 'UC-203': '确认放款', 'UC-204': '确认还款', 'UC-205b': '保存催收记录',
   'UC-301': '确认开立', 'UC-303': '确认买卖', 'UC-304': '确认变更', 'UC-307': '确认挂牌',
   'UC-401': '提交申请', 'UC-402': '提交审批结论', 'UC-403': '生成账单', 'UC-404': '确认还款', 'UC-405': '确认取现', 'UC-406': '确认办理',
-  'UC-501b': '确认新建用户', 'UC-501c': '保存修改', 'UC-502b': '保存参数', 'UC-504b': '确认恢复数据', 'UC-508': '保存产品',
-  'UC-603': '刷新当日行情', 'UC-604': '提交测评', 'UC-605': '确认申购', 'UC-606': '确认赎回',
+  'UC-501b': '确认新建用户', 'UC-501c': '保存修改', 'UC-502b': '保存参数', 'UC-504b': '确认恢复数据',
+  'UC-603': '刷新当日行情', 'UC-604': '提交测评', 'UC-605': '确认申购', 'UC-606': '确认赎回', 'UC-608': '保存产品',
 };
 function submitLabel(op) {
   if (op.type === 'download') return '下载备份';
@@ -204,7 +204,12 @@ function showApp() {
 function selectOp(op, li) {
   [...$('menu').children].forEach(x => x.classList.remove('active'));
   if (li) li.classList.add('active');
-  const fieldsHtml = op.fields.map(f => renderField(f)).join('');
+  const fieldsHtml = op.fields.map(f => {
+    let h = renderField(f);
+    if (op.lookup && f.n === op.lookup.byField)  // 查询回填按钮紧跟在定位字段(如工号)之后
+      h += `<div class="field full"><button type="button" class="btn btn-ghost" id="lookupBtn">🔍 查询并回填</button> <small id="lookupInfo" class="hint"></small></div>`;
+    return h;
+  }).join('');
   const uploadHtml = op.type === 'upload' ? `<div class="field full"><label>备份文件</label><input type="file" id="f_file" accept=".json"></div>` : '';
   $('content').innerHTML = `
     <div class="panel">
@@ -220,8 +225,30 @@ function selectOp(op, li) {
       <div id="result"></div>
     </div>`;
   $('opform').onsubmit = e => { e.preventDefault(); submitOp(op); };
+  if (op.lookup) { const lb = $('lookupBtn'); if (lb) lb.onclick = () => runLookup(op); }
   const first = $('opform').querySelector('input:not([type=checkbox]):not([type=file]), select');
   if (first) first.focus();
+}
+
+// 查询回填：凭定位字段(如工号)先查出当前记录，把其字段值填进表单供修改
+async function runLookup(op) {
+  const lk = op.lookup;
+  const keyField = op.fields.find(f => f.n === lk.byField) || {};
+  const key = ($('f_' + lk.byField).value || '').trim();
+  if (!key) return banner('err', `请先填写「${keyField.label || lk.byField}」`);
+  banner('', '');
+  const { status, data } = await API.call('GET', lk.path, { query: {} });
+  if (status === 401) return sessionExpired();
+  if (!data.success) return banner('err', data.message || '查询失败');
+  const rec = lk.find(data.data, key);
+  if (!rec) return banner('err', `未找到「${key}」，请核对`);
+  for (const [name, val] of Object.entries(lk.fill(rec))) {
+    const el = $('f_' + name);
+    if (el) el.value = (val == null ? '' : String(val));
+  }
+  const info = $('lookupInfo');
+  if (info) info.textContent = lk.show ? lk.show(rec) : '';
+  banner('ok', '已带出当前信息，修改需要变更的项后点保存');
 }
 
 function renderField(f) {

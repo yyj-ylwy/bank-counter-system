@@ -400,6 +400,19 @@ const OPERATIONS = {
           { k: 'month_pct', label: '月', fmt: v => v == null ? '-' : pct(v) }, { k: 'year_pct', label: '年', fmt: v => v == null ? '-' : pct(v) },
         ]) + '<p class="hint">日/周/月/年为价格变动幅度（不含期间买卖现金流）；标「非当日」的价为最近可得行情</p>' : `<p class="hint">${d.hint || '暂无持仓'}</p>`),
     },
+    {
+      code: 'UC-608', name: '理财产品维护', method: 'POST', path: '/api/invest/product',
+      fields: [
+        { n: 'code', label: '产品代码', required: true, hint: '基金填基金代码(如000001)，股票填美股代码(如AAPL)' },
+        { n: 'name', label: '产品名称', required: true },
+        { n: 'ptype', label: '类型', type: 'select', options: [{ value: 'FUND', label: '基金(人民币,天天基金)' }, { value: 'STOCK', label: '股票(美股USD,自动折CNY)' }] },
+        { n: 'market_symbol', label: '行情代码', required: true, hint: '一般同产品代码' },
+        { n: 'risk_level', label: '风险等级', type: 'select', options: [{ value: '1', label: '1-低' }, { value: '2', label: '2-中低' }, { value: '3', label: '3-中' }, { value: '4', label: '4-中高' }, { value: '5', label: '5-高' }] },
+        { n: 'status', label: '状态', type: 'select', options: [{ value: '1', label: '在售' }, { value: '0', label: '停售' }] },
+      ],
+      hint: '维护理财产品目录；股票默认按美股(USD)取价并折算人民币',
+      result: d => kv({ '产品代码': d.code, '名称': d.name }),
+    },
   ],
 
   // ================= 系统管理员 =================
@@ -426,7 +439,14 @@ const OPERATIONS = {
         { n: 'status', label: '状态', type: 'select', options: [{ value: '', label: '不变' }, { value: '1', label: '启用' }, { value: '0', label: '停用' }] },
         { n: 'password', label: '重置密码', type: 'password' },
       ],
-      hint: '不能停用/降权当前登录的自己；系统须保留至少一名在用管理员。柜员忘记密码可在此重置。',
+      lookup: {
+        byField: 'employee_no',
+        path: '/api/admin/users',
+        find: (d, key) => (d.users || []).find(u => u.employee_no === key),
+        fill: u => ({ name: u.name, role: u.role, status: String(u.status) }),
+        show: u => `当前 → 姓名：${u.name}　角色：${u.role_label}　状态：${u.status_label}`,
+      },
+      hint: '先输工号点「查询并回填」带出当前姓名/角色/状态，再修改需要变更的项。不能停用/降权当前登录的自己；系统须保留至少一名在用管理员。柜员忘记密码可在此重置。',
       result: d => kv({ '工号': d.user.employee_no, '姓名': d.user.name, '角色': d.user.role_label, '状态': d.user.status_label }),
     },
     {
@@ -468,19 +488,6 @@ const OPERATIONS = {
       fields: [{ n: 'confirm', label: '我已确认恢复风险', type: 'checkboxVal', value: 'true', required: true }],
       hint: '高风险操作：会用备份文件覆盖当前数据',
       result: d => kv(Object.fromEntries(Object.entries(d.restored || {}).map(([k, v]) => [objectLabel(k), v]))),
-    },
-    {
-      code: 'UC-508', name: '理财产品维护', method: 'POST', path: '/api/invest/admin/product',
-      fields: [
-        { n: 'code', label: '产品代码', required: true, hint: '基金填基金代码(如000001)，股票填美股代码(如AAPL)' },
-        { n: 'name', label: '产品名称', required: true },
-        { n: 'ptype', label: '类型', type: 'select', options: [{ value: 'FUND', label: '基金(人民币,天天基金)' }, { value: 'STOCK', label: '股票(美股USD,自动折CNY)' }] },
-        { n: 'market_symbol', label: '行情代码', required: true, hint: '一般同产品代码' },
-        { n: 'risk_level', label: '风险等级', type: 'select', options: [{ value: '1', label: '1-低' }, { value: '2', label: '2-中低' }, { value: '3', label: '3-中' }, { value: '4', label: '4-中高' }, { value: '5', label: '5-高' }] },
-        { n: 'status', label: '状态', type: 'select', options: [{ value: '1', label: '在售' }, { value: '0', label: '停售' }] },
-      ],
-      hint: '维护理财产品目录；股票默认按美股(USD)取价并折算人民币',
-      result: d => kv({ '产品代码': d.code, '名称': d.name }),
     },
   ],
 };

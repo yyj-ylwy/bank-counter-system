@@ -28,7 +28,6 @@ from forex import refresh_rates  # 复用外汇的 CNY 中间价做货币换算
 
 bp = Blueprint("invest", __name__, url_prefix="/api/invest")
 clerk = require_role(C.ROLE_INVEST)
-admin_only = require_role(C.ROLE_ADMIN)
 
 _Q4 = Decimal("0.0001")
 
@@ -185,9 +184,9 @@ def product_view(db, p, with_price=True):
     return v
 
 
-# ==================== UC-601 产品目录（管理员维护 / 理财员查看）====================
-@bp.post("/admin/product")
-@admin_only
+# ==================== UC-601 产品目录（理财业务员维护 / 查看）====================
+@bp.post("/product")
+@clerk
 def upsert_product():
     d = _body()
     code = (d.get("code") or "").strip()

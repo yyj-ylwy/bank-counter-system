@@ -100,10 +100,10 @@ def run():
     # 权限：储蓄员不能调理财申购（角色隔离）
     ok("权限 储蓄员调申购→403 [安全]", cl.post("/api/invest/buy", headers={"Authorization": "Bearer " + S}, json={"ident": c["id_no"], "product_code": "000198", "amount": "1"}).status_code == 403)
 
-    # 管理员维护产品
-    ok("508 管理员维护理财产品 [正常流]", OK(api("POST", "/api/invest/admin/product", AD, json={"code": "005827", "name": "易方达蓝筹精选", "ptype": "FUND", "market_symbol": "005827", "risk_level": "4", "status": "1"})))
-    ok("508 类型非法→E-REQ [判定]", E(api("POST", "/api/invest/admin/product", AD, json={"code": "X", "name": "x", "ptype": "BOND", "market_symbol": "x"})) == "E-REQ")
-    ok("508 理财员无权维护产品→403 [安全]", cl.post("/api/invest/admin/product", headers={"Authorization": "Bearer " + INV}, json={"code": "Y", "name": "y", "ptype": "FUND", "market_symbol": "y"}).status_code == 403)
+    # 理财业务员维护产品（产品维护归理财业务员，非管理员）
+    ok("608 理财员维护理财产品 [正常流]", OK(api("POST", "/api/invest/product", INV, json={"code": "005827", "name": "易方达蓝筹精选", "ptype": "FUND", "market_symbol": "005827", "risk_level": "4", "status": "1"})))
+    ok("608 类型非法→E-REQ [判定]", E(api("POST", "/api/invest/product", INV, json={"code": "X", "name": "x", "ptype": "BOND", "market_symbol": "x"})) == "E-REQ")
+    ok("608 管理员无权维护产品→403 [安全]", cl.post("/api/invest/product", headers={"Authorization": "Bearer " + AD}, json={"code": "Y", "name": "y", "ptype": "FUND", "market_symbol": "y"}).status_code == 403)
 
 
 if __name__ == "__main__":
