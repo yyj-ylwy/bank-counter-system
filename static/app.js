@@ -229,6 +229,7 @@ function selectOp(op, li) {
           <button type="reset" class="btn btn-ghost">重填</button>
         </div>
       </form>
+      ${op.footer ? `<div class="op-footer">${op.footer()}</div>` : ''}
       <div id="banner"></div>
       <div id="result"></div>
     </div>`;

@@ -12,7 +12,7 @@ from flask import Blueprint, request, g
 import constants as C
 from db import get_db, run_in_transaction
 from auth import require_role
-from forex import refresh_rates
+from forex import cached_rate
 from common import (
     ok, fail, D, dec, m, now, as_int,
     find_customer, resolve_credit_card, resolve_account_no, resolve_fx_account,
@@ -43,20 +43,27 @@ def _card_currency(cc):
     return _spec(cc).get("currency", "CNY")
 
 
-# ============ 货币换算（经人民币中转，用外汇实时中间价）============
+# ============ 货币换算（经人民币中转）============
+# 汇率一律取外汇模块「最近一次查询到」的中间价：本模块不主动调行情 API。
+# 外汇页面(UC-306)查询/刷新某币种后，这里的折算金额（消费结算额、存款合计、提额上限等）自动跟着更新；
+# 从未查过的币种则拒绝办理，并提示先去外汇模块查一次——不臆造汇率、也不偷偷去调 API。
+_RATE_HINT = "，请先到外汇模块「UC-306 实时汇率查询」查询该币种汇率后再办理"
+
+
 def _to_cny(db, amount, currency):
-    """把 amount(currency) 折算为人民币。返回 (Decimal 或 None, err)。"""
+    """按最近一次查询到的汇率把 amount(currency) 折算为人民币。返回 (Decimal 或 None, err)。"""
     currency = (currency or "CNY").upper()
     if currency == "CNY":
         return D(amount), None
-    r, err, _ = refresh_rates(db, currency)
-    if not r:
-        return None, err or f"{currency} 实时汇率暂不可用"
+    r = cached_rate(currency)
+    if not r or dec(r["mid"]) <= 0:
+        return None, f"{currency} 尚无已查询的汇率{_RATE_HINT}"
     return D(dec(r["mid"]) * D(amount)), None
 
 
 def _convert(db, amount, from_cur, to_cur):
-    """货币换算：amount 从 from_cur 折算到 to_cur（经人民币中转）。返回 (Decimal 或 None, err)。"""
+    """货币换算：amount 从 from_cur 折算到 to_cur（经人民币中转，用最近一次查询到的汇率）。
+    返回 (Decimal 或 None, err)。"""
     from_cur, to_cur = (from_cur or "CNY").upper(), (to_cur or "CNY").upper()
     if from_cur == to_cur:
         return D(amount), None
@@ -65,9 +72,9 @@ def _convert(db, amount, from_cur, to_cur):
         return None, err
     if to_cur == "CNY":
         return cny, None
-    r, err, _ = refresh_rates(db, to_cur)
+    r = cached_rate(to_cur)
     if not r or dec(r["mid"]) <= 0:
-        return None, err or f"{to_cur} 实时汇率暂不可用"
+        return None, f"{to_cur} 尚无已查询的汇率{_RATE_HINT}"
     return D(cny / dec(r["mid"])), None
 
 
@@ -87,16 +94,24 @@ def _fund_account(db, ident, card_cur):
 
 
 def _total_deposit_cny(db, customer_id, session=None):
-    """客户名下总存款折人民币：储蓄账户余额 + 各外汇子户余额折 CNY。"""
+    """客户名下总存款折人民币 = 储蓄账户余额 + 各外汇子户余额按最近一次查询汇率折 CNY。
+    返回 (total, missing)：missing 为「有余额但汇率从未查过」的币种，非空说明折算不完整，
+    调用方不得据此下结论（否则会少算存款、把本该通过的提额误拒）。余额为 0 的子户不需要汇率。"""
     total = D(0)
+    missing = []
     for a in db.account.find({"customer_id": customer_id, "status": {"$ne": C.ACCOUNT_CLOSED}}, session=session):
         total += dec(a["balance"])
     for f in db.fx_account.find({"customer_id": customer_id,
                                  "status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}}, session=session):
-        cny, err = _to_cny(db, dec(f["balance"]), f["currency"])
-        if cny is not None:
+        bal = dec(f["balance"])
+        if bal == 0:
+            continue
+        cny, _err = _to_cny(db, bal, f["currency"])
+        if cny is None:
+            missing.append(f["currency"])
+        else:
             total += cny
-    return total
+    return total, missing
 
 
 # ============ 视图 ============
@@ -209,7 +224,7 @@ def approve_quote():
         acct_no, acct_bal = _fund_account(db, ident, card_cur)   # 本卡币种对应账户余额
         # 审批依据与 approve() 完全一致：新额度折人民币 ≤ 存款合计(折人民币) × 比例
         new_limit_cny, cerr = _to_cny(db, new_limit, card_cur)
-        deposit_cny = _total_deposit_cny(db, cc["customer_id"])
+        deposit_cny, missing = _total_deposit_cny(db, cc["customer_id"])
         cap_cny = D(deposit_cny * ratio)
         data.update({
             "purpose": "INCREASE", "purpose_label": "提高信用额审批",
@@ -220,9 +235,9 @@ def approve_quote():
             "new_limit_cny": None if cerr else float(new_limit_cny),
             "requested_at": lr.get("requested_at"), "reason": lr.get("reason"),
         })
-        if cerr:  # 汇率不可用则给不出建议，如实说明（不臆造绿灯）
-            data.update({"advise": None, "advise_label": "无法判定",
-                         "advise_reason": f"额度折算汇率暂不可用：{cerr}"})
+        if cerr or missing:  # 折算不完整则给不出建议，如实说明（不臆造绿灯）
+            why = cerr or f"存款中 {'、'.join(missing)} 尚无已查询的汇率，存款合计折算不完整{_RATE_HINT}"
+            data.update({"advise": None, "advise_label": "无法判定", "advise_reason": why})
         elif new_limit_cny <= cap_cny:
             data.update({"advise": "APPROVE", "advise_label": "建议通过",
                          "advise_reason": f"新额度折 {new_limit_cny} 元，未超过存款({deposit_cny}元)的"
@@ -294,8 +309,12 @@ def approve():
             ratio = get_param_dec(db, C.P_CC_LIMIT_DEPOSIT_RATIO, "0.30")
             new_limit_cny, cerr = _to_cny(db, new_limit, _card_currency(cc))
             if cerr:
-                return fail("E-RATE", f"额度折算汇率暂不可用：{cerr}")
-            deposit_cny = _total_deposit_cny(db, cc["customer_id"])
+                return fail("E-RATE", cerr)
+            # 存款折算不完整就不能下结论：少算存款会把本该通过的提额误拒
+            deposit_cny, missing = _total_deposit_cny(db, cc["customer_id"])
+            if missing:
+                return fail("E-RATE", f"该客户存款含 {'、'.join(missing)}，尚无已查询的汇率，"
+                                      f"无法核算存款合计{_RATE_HINT}")
             cap = D(deposit_cny * ratio)
             if new_limit_cny > cap:
                 return fail("E-1", f"提额被拒：新额度折 {new_limit_cny} 元，超过存款({deposit_cny}元)的"

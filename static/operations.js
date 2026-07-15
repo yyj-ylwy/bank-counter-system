@@ -4,6 +4,13 @@
 const ID_TYPES = ['身份证', '护照', '港澳通行证', '军官证'];
 // 信用卡卡种（每人每种卡最多一张，故「身份+卡种」即可唯一定位一张卡，无需记卡号）
 const CARD_TYPES = ['银联白金卡', '银联钻石卡', 'Visa Platinum', 'MasterCard World Elite'];
+// 卡种权益说明（展示用）。数值口径须与后端 constants.py 的 CARD_SPECS 一致——改优惠请两处同改。
+const CARD_BENEFITS = [
+  { type: '银联白金卡', network: '银联', currency: '人民币 CNY', limit: 20000, cashback: '2.4%（入人民币储蓄账户）', points: '—', fxfee: '1%' },
+  { type: '银联钻石卡', network: '银联', currency: '人民币 CNY', limit: 100000, cashback: '4.4%（入人民币储蓄账户）', points: '—', fxfee: '1%' },
+  { type: 'Visa Platinum', network: 'Visa', currency: '美元 USD', limit: 20000, cashback: '—', points: '每消费 1 美元得 7 分', fxfee: '1.95%' },
+  { type: 'MasterCard World Elite', network: 'MasterCard', currency: '美元 USD', limit: 50000, cashback: '—', points: '每消费 1 美元得 10 分', fxfee: '免除' },
+];
 // 币种：显示中文，提交仍用 USD/EUR/JPY
 const CURRENCIES = [{ value: 'USD', label: '美元(USD)' }, { value: 'EUR', label: '欧元(EUR)' }, { value: 'JPY', label: '日元(JPY)' }, { value: 'GBP', label: '英镑(GBP)' }, { value: 'HKD', label: '港元(HKD)' }, { value: 'AUD', label: '澳元(AUD)' }, { value: 'CAD', label: '加元(CAD)' }, { value: 'CHF', label: '瑞郎(CHF)' }, { value: 'SGD', label: '新元(SGD)' }];
 
@@ -289,7 +296,17 @@ const OPERATIONS = {
         { n: 'card_type', label: '卡片类型', type: 'select', options: CARD_TYPES },
         { n: 'occupation', label: '职业' }, { n: 'monthly_income', label: '月收入', type: 'number' },
       ],
-      hint: '每人每种卡最多一张。',
+      hint: '每人每种卡最多一张。各卡种权益见下方对比表。',
+      // 表单按钮下方：四种卡的卡组织/返现/积分等优惠对比，供柜员向客户介绍
+      footer: () => '<h4>卡种权益对比</h4>' + tbl(CARD_BENEFITS, [
+        { k: 'type', label: '卡种' },
+        { k: 'network', label: '卡组织' },
+        { k: 'currency', label: '计价币种' },
+        { k: 'limit', label: '默认授信额度', fmt: money },
+        { k: 'cashback', label: '消费返现' },
+        { k: 'points', label: '消费积分' },
+        { k: 'fxfee', label: '外币交易费' },
+      ]) + '<p class="hint">返现按消费金额折本卡币种后计算，实时入客户人民币储蓄账户；积分归客户账户所有、该客户名下各卡消费累计共享，可在「UC-407 积分商城」兑换机票/酒店/接机专车等奖品。外币交易费在消费币种与本卡币种不一致时收取，MasterCard World Elite 免除。</p>',
       result: d => kv({ '卡号': d.credit_card.card_no, '卡种': d.credit_card.card_type, '卡组织': d.credit_card.network, '币种': d.credit_card.currency, '状态': d.credit_card.status_label }),
     },
     {

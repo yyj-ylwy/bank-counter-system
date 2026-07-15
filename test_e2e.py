@@ -385,6 +385,32 @@ def t_creditcard():
     q0 = api("GET", "/api/creditcard/repay-quote", CCK, query={"ident": cid, "card_type": "银联白金卡"})
     ok("405 结清后试算应还=0 [边界]", OK(q0) and q0["data"]["outstanding"] == 0.0 and q0["data"]["min_amount"] == 0.0 and q0["data"]["min_interest"] == 0.0)
 
+    # ---------- 外币折算：只用「最近一次查询到」的汇率，本模块不主动调 API ----------
+    # 直接操作 forex 的汇率缓存，使该分支离线可测且结果确定（真实场景由外汇模块 UC-306 查询写入）
+    import time as _time
+    from common import D6 as _D6
+    from forex import _rate_cache
+    _saved = dict(_rate_cache)
+    _rate_cache.clear()
+    ok("404 未查过汇率的外币消费→E-RATE(不主动调API) [规则]", E(api("POST", "/api/creditcard/consume", CCK, json={
+        "ident": cid, "card_type": "银联白金卡", "currency": "EUR", "amount": "10"})) == "E-RATE")
+    # 模拟外汇页面查过 EUR=7.75：信用卡按该汇率折算
+    _rate_cache["EUR"] = {"mid": _D6("7.75"), "buy": _D6("7.72"), "sell": _D6("7.78"),
+                          "as_of": "test", "ts": _time.monotonic()}
+    reur = api("POST", "/api/creditcard/consume", CCK, json={
+        "ident": cid, "card_type": "银联白金卡", "currency": "EUR", "amount": "100"})
+    ok("404 外币消费按最近一次查询汇率折算(100EUR×7.75=775) [规则]", OK(reur) and abs(reur["data"]["card_amount"] - 775.0) < 0.01)
+    ok("404 银联外币交易费1%(=7.75) [金额]", OK(reur) and abs(reur["data"]["fee"] - 7.75) < 0.01)
+    ok("404 银联白金外币消费返现2.4%(=18.6) [金额]", OK(reur) and abs(reur["data"]["reward"]["cashback"] - 18.6) < 0.01)
+    # 外汇页面刷新汇率后，信用卡折算金额随之改变（同样不调 API）
+    _rate_cache["EUR"]["mid"] = _D6("8.00")
+    reur2 = api("POST", "/api/creditcard/consume", CCK, json={
+        "ident": cid, "card_type": "银联白金卡", "currency": "EUR", "amount": "100"})
+    ok("404 外汇页刷新汇率后折算跟着变(100EUR×8.00=800) [规则]", OK(reur2) and abs(reur2["data"]["card_amount"] - 800.0) < 0.01)
+    api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "FULL"})  # 结清，不影响后续断言
+    _rate_cache.clear()
+    _rate_cache.update(_saved)
+
     # UC-403 提额申请 + UC-402 提额审批（新额度不得高于存款的 30%）
     ok("403 提额低于当前→E-1 [边界]", E(api("POST", "/api/creditcard/increase-limit", CCK, json={"ident": cid, "card_type": "银联白金卡", "new_limit": "15000"})) == "E-1")
     ok("403 提额申请成功(挂起) [正常流]", OK(api("POST", "/api/creditcard/increase-limit", CCK, json={"ident": cid, "card_type": "银联白金卡", "new_limit": "25000"})))
@@ -522,6 +548,33 @@ def t_auth():
     ok("00A 我的经办记录 [正常流]", OK(api("GET", "/api/my-activity", S, query={})))
 
 
+def t_card_benefits_ui():
+    """UC-401 页展示的卡种权益表(operations.js CARD_BENEFITS)必须与后端 CARD_SPECS 口径一致。
+    这张表是给客户看的优惠承诺，若只改一处会对客户产生误导，故用测试钉死。"""
+    print("== 卡种权益表 与 CARD_SPECS 一致性 ==")
+    import re
+    from decimal import Decimal
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "operations.js"),
+               encoding="utf-8").read()
+    mm = re.search(r"const CARD_BENEFITS = \[(.*?)\n\];", src, re.S)
+    ok("UI 权益表存在 [一致性]", bool(mm))
+    block = mm.group(1) if mm else ""
+    for ctype, spec in C.CARD_SPECS.items():
+        row = next((ln for ln in block.splitlines() if f"'{ctype}'" in ln), "")
+        good = bool(row) and str(int(Decimal(spec["default_limit"]))) in row.replace(",", "")
+        cb = Decimal(spec["cashback_rate"]) * 100
+        if cb > 0:
+            good = good and f"{cb.normalize()}%" in row
+        pts = int(Decimal(spec["points_per_unit"]))
+        if pts > 0:
+            good = good and f"得 {pts} 分" in row
+        if spec["waive_fx_fee"]:
+            good = good and "免除" in row
+        else:
+            good = good and f"{(Decimal(spec['fx_fee_rate']) * 100).normalize()}%" in row
+        ok(f"UI 权益与后端一致：{ctype} [一致性]", good)
+
+
 def t_robust():
     print("== 健壮性/安全 ==")
     # 非对象 JSON 体不再 500（_body 归一为空对象，走正常校验）
@@ -538,7 +591,8 @@ def t_robust():
 
 if __name__ == "__main__":
     try:
-        t_savings(); t_loan(); t_forex(); t_creditcard(); t_admin(); t_auth(); t_robust()
+        t_savings(); t_loan(); t_forex(); t_creditcard(); t_card_benefits_ui()
+        t_admin(); t_auth(); t_robust()
     finally:
         get_client().drop_database("bank_counter_e2etest")  # 删除一次性库
     print(f"\n==== 结果：{_p} 通过 / {_f} 失败（共 {_p + _f} 条断言）====")

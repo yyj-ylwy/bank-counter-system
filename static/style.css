@@ -153,6 +153,10 @@ body {
 .lookup-info table.kv td { overflow-wrap: anywhere; }
 .bad { color: var(--err); font-weight: 500; }
 .good { color: var(--ok); font-weight: 500; }
+/* 表单下方的说明区（如信用卡申请页的卡种权益对比） */
+.op-footer { margin-top: 22px; padding-top: 18px; border-top: 1px dashed var(--border); }
+.op-footer h4 { margin: 0 0 10px; font-size: 14px; color: #435063; font-weight: 600; }
+.op-footer table.grid { margin-top: 0; }
 .hint-inline { color: var(--muted); font-size: 12px; }
 .hint {
   color: #5a6675; font-size: 13px; margin: 12px 0; padding: 9px 13px;

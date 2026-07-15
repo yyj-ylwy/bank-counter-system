@@ -147,6 +147,16 @@ def refresh_rates(db, currency):
     return rec, None, False
 
 
+def cached_rate(currency):
+    """取「最近一次查询到」的牌价，绝不触发 API 调用；从未查过该币种则返回 None。
+
+    供信用卡等模块折算外币金额用：这些模块不主动更新汇率，一律沿用外汇模块最近一次查到的值；
+    外汇页面(UC-306)刷新汇率后，这里下次折算自动跟着变。不看 TTL —— 过期只影响「要不要重新拉」，
+    而这里本就不拉，因此只要查过就用最近一次的值。
+    """
+    return _rate_cache.get((currency or "").strip().upper())
+
+
 def read_rate(db, currency, direction):
     """取某币种按方向的适用牌价：BUY=客户买入外币(用卖出价) / SELL=客户卖出外币(用买入价)。
     返回 (rate, rate_type) 或 (None, None)。牌价来自 30 分钟实时缓存。"""
