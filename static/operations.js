@@ -77,7 +77,10 @@ function paramValue(v, row) {
   return v;
 }
 
-// 结果渲染小工具（由 app.js 注入到全局：money / tbl / kv）
+// 结果渲染小工具（由 app.js 注入到全局：money / tbl / kv / esc）
+// kvRows：与 kv() 同样式的键值行，但值允许受控 HTML（如标红提示）——数据须由调用方自行 esc
+const kvRows = rows => '<table class="kv">' + rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`).join('') + '</table>';
+
 function txnTable(list) {
   return tbl(list, [
     { k: 'txn_no', label: '流水号' },
@@ -334,40 +337,57 @@ const OPERATIONS = {
       result: d => kv({ '原始消费': d.orig, '折本卡': money(d.card_amount) + ' ' + d.card_currency, '外币交易费': money(d.fee) + ' ' + d.card_currency, '奖励': d.reward.type === 'CASHBACK' ? ('返现 ' + money(d.reward.cashback) + ' 元→' + d.reward.account_no) : (d.reward.type === 'POINTS' ? ('积分 +' + d.reward.points) : '无'), '剩余可用额度': money(d.available_limit) + ' ' + d.card_currency, '流水号': d.txn.txn_no }),
     },
     {
-      code: 'UC-405', name: '还款处理（提前/按期/最低额）', method: 'POST', path: '/api/creditcard/repay',
+      code: 'UC-405', name: '还款处理（提前/按期最低额）', method: 'POST', path: '/api/creditcard/repay',
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
         { n: 'card_type', label: '还款卡种', type: 'select', options: CARD_TYPES, required: true },
-        { n: 'repay_type', label: '还款方式', type: 'select', options: [{ value: 'FULL', label: '提前还款(全额结清)' }, { value: 'SCHEDULED', label: '按期还款(指定金额)' }, { value: 'MIN', label: '按期最低额还款' }] },
-        { n: 'amount', label: '还款金额（按期还款填）', type: 'number' },
+        { n: 'repay_type', label: '还款方式', type: 'select', options: [{ value: 'FULL', label: '提前还款(全额结清)' }, { value: 'SCHEDULED', label: '提前还款(指定金额)' }, { value: 'MIN', label: '按期最低额还款' }] },
+        { n: 'amount', label: '还款金额（提前还款(指定金额)时填）', type: 'number' },
       ],
-      // 第一步：填身份+选卡种 →「确认不同还款情况下的应还金额」，各方式金额直接显示进还款方式下拉；
+      // 第一步：填身份+选卡种 →「确认应还金额」，各方式金额显示进还款方式下拉、明细按行展示；
       // 第二步：在下拉里看着金额选还款方式 →「确认还款」
       lookup: {
         byField: 'card_type',
-        btnLabel: '💡 确认不同还款情况下的应还金额',
+        btnLabel: '确认应还金额',
         path: '/api/creditcard/repay-quote',
         query: v => ({ ident: v.ident, card_type: v.card_type }),
         find: q => q,
-        fill: q => ({ amount: q.outstanding > 0 ? q.outstanding : '' }),  // 按期还款金额默认带出全额，可改
-        okMsg: '应还金额已带出：请在「还款方式」下拉中查看全额/最低额各应还多少，选定后点「确认还款」',
+        fill: q => ({ amount: q.outstanding > 0 ? q.outstanding : '' }),  // 指定金额默认带出全额，可改
+        okMsg: '应还金额已带出：请在「还款方式」下拉中查看各方式应还多少，选定后点「确认还款」',
         // 把应还金额写进还款方式下拉，选的时候就能看到具体数字
         options: q => ({
           repay_type: q.outstanding > 0 ? [
             { value: 'FULL', label: `提前还款(全额结清)　应还 ${money(q.outstanding)} ${q.currency}` },
-            { value: 'SCHEDULED', label: `按期还款(指定金额)　不低于最低额 ${money(q.min_amount)} ${q.currency}` },
+            { value: 'SCHEDULED', label: `提前还款(指定金额)　不低于最低额 ${money(q.min_amount)} ${q.currency}` },
             { value: 'MIN', label: `按期最低额还款　应还 ${money(q.min_amount)} ${q.currency}（剩余本金本月计息约 ${money(q.min_interest)} ${q.currency}）` },
           ] : [
             { value: 'FULL', label: '提前还款(全额结清)　当前无欠款' },
-            { value: 'SCHEDULED', label: '按期还款(指定金额)　当前无欠款' },
+            { value: 'SCHEDULED', label: '提前还款(指定金额)　当前无欠款' },
             { value: 'MIN', label: '按期最低额还款　当前无欠款' },
           ],
         }),
-        show: q => q.outstanding > 0
-          ? `${q.credit_card.card_type} ${q.credit_card.card_no}｜提前还款(全额结清) ${money(q.outstanding)} ${q.currency}｜按期最低额还款 ${money(q.min_amount)} ${q.currency}（剩余本金本月计息约 ${money(q.min_interest)} ${q.currency}）｜还款账户 ${q.fund_account || '（无可用账户）'}${q.fund_balance == null ? '' : '，余额 ' + money(q.fund_balance) + ' ' + q.currency}`
-          : `${q.credit_card.card_type} ${q.credit_card.card_no}｜当前无欠款，无需还款`,
+        // 按行展示：卡号/卡种/提前全额/按期最低/还款账户余额（不足标红）。数据一律 esc 后拼接。
+        render: q => {
+          const cur = esc(q.currency), has = q.outstanding > 0;
+          const acctLabel = q.currency === 'CNY' ? '人民币储蓄账户余额' : '美元外汇子户余额';
+          let bal;
+          if (!q.fund_account) {
+            bal = `<span class="bad">未找到可用${q.currency === 'CNY' ? '人民币储蓄账户' : '美元外汇子户'}，无法还款</span>`;
+          } else {
+            bal = `${esc(q.fund_account)}　${esc(money(q.fund_balance))} ${cur}`;
+            if (has && q.fund_balance < q.min_amount) bal += ` <span class="bad">余额不足：连最低还款额 ${esc(money(q.min_amount))} ${cur} 都不够</span>`;
+            else if (has && q.fund_balance < q.outstanding) bal += ` <span class="bad">余额不足以全额还款（可选按期最低额还款）</span>`;
+          }
+          return kvRows([
+            ['卡号', esc(q.credit_card.card_no)],
+            ['卡种', `${esc(q.credit_card.card_type)}（${cur}）`],
+            ['提前还款(全额结清)', has ? `${esc(money(q.outstanding))} ${cur}` : '当前无欠款，无需还款'],
+            ['按期最低额还款', has ? `${esc(money(q.min_amount))} ${cur}　<span class="hint-inline">剩余本金本月计息约 ${esc(money(q.min_interest))} ${cur}</span>` : '当前无欠款，无需还款'],
+            [acctLabel, bal],
+          ]);
+        },
       },
-      hint: '两步：① 填身份、选卡种后点「查询应还金额」，带出提前还款/按期最低额各应还多少；② 再选还款方式点「确认还款」。人民币卡用人民币储蓄账户还、美元卡用美元外汇子户还；多还部分退回；最低额还款的剩余本金按月利率 5% 计息。',
+      hint: '两步：① 填身份、选卡种后点「确认应还金额」，带出该卡各方式应还多少；② 再选还款方式点「确认还款」。人民币卡用人民币储蓄账户还、美元卡用美元外汇子户还；多还部分退回；最低额还款的剩余本金按月利率 5% 计息。',
       result: d => kv({ '卡号': d.credit_card.card_no, '本次还款': money(d.pay) + ' ' + d.currency, '还款来源': d.fund, '循环利息': money(d.interest) + ' ' + d.currency, '剩余欠款': money(d.outstanding) + ' ' + d.currency, '可用额度': money(d.available_limit) + ' ' + d.currency }),
     },
     {

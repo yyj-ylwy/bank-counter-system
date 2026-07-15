@@ -126,7 +126,9 @@ body {
 /* ---------- 表单 ---------- */
 #opform { margin-top: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 22px; }
 .form-actions { grid-column: 1 / -1; display: flex; gap: 12px; margin-top: 10px; }
-.field { margin-bottom: 15px; display: flex; flex-direction: column; }
+/* min-width:0：栅格子项默认 min-width:auto 不会收缩到小于内容最小宽度，
+   长内容(如查询结果)会把 1fr 列撑开导致整个表单横向溢出（窄屏尤其明显）。 */
+.field { margin-bottom: 15px; display: flex; flex-direction: column; min-width: 0; }
 .field.inline { flex-direction: row; align-items: center; gap: 9px; grid-column: 1 / -1; }
 .field.full { grid-column: 1 / -1; }
 .field label { font-size: 13px; color: #435063; margin-bottom: 6px; font-weight: 500; }
@@ -143,6 +145,14 @@ body {
 .field .cb { width: 17px; height: 17px; accent-color: var(--primary); cursor: pointer; }
 .field small { color: var(--muted); font-size: 12px; margin-top: 5px; }
 .req { color: var(--err); margin-left: 3px; }
+/* 查询回填：按钮按内容宽度(与主提交按钮观感一致)，结果按行展示且不撑破栅格 */
+.field.lookup-row { align-items: flex-start; gap: 10px; }
+.lookup-info { width: 100%; min-width: 0; }
+.lookup-info:empty { display: none; }
+.lookup-info table.kv { margin: 0; }
+.lookup-info table.kv td { overflow-wrap: anywhere; }
+.bad { color: var(--err); font-weight: 500; }
+.hint-inline { color: var(--muted); font-size: 12px; }
 .hint {
   color: #5a6675; font-size: 13px; margin: 12px 0; padding: 9px 13px;
   background: #f4f7fb; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0;

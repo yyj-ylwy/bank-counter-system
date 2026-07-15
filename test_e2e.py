@@ -368,10 +368,10 @@ def t_creditcard():
     ok("405 试算:带出币种与还款账户 [查询]", OK(quote) and quote["data"]["currency"] == "CNY" and bool(quote["data"]["fund_account"]))
     ok("405 试算:卡种不符→E-NOCARD [判定]", E(api("GET", "/api/creditcard/repay-quote", CCK, query={"ident": cid, "card_type": "Visa Platinum"})) == "E-NOCARD")
 
-    # UC-405 第二步：还款（身份+卡种定位；人民币卡用人民币储蓄账户还）
+    # UC-405 第二步：还款（提前全额/提前指定金额/按期最低额；人民币卡用人民币储蓄账户还）
     ok("405 还款方式非法→E-OP [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "XX"})) == "E-OP")
-    ok("405 按期金额0→E-AMT [边界]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "SCHEDULED", "amount": "0"})) == "E-AMT")
-    ok("405 按期<最低额→E-2 [组合]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "SCHEDULED", "amount": "50"})) == "E-2")
+    ok("405 指定金额0→E-AMT [边界]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "SCHEDULED", "amount": "0"})) == "E-AMT")
+    ok("405 指定金额<最低额→E-2 [组合]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "SCHEDULED", "amount": "50"})) == "E-2")
     rmin = api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "MIN"})
     ok("405 最低额还款成功&剩余本金计息 [正常流]", OK(rmin) and rmin["data"]["interest"] > 0)
     ok("405 提前(全额)还款结清 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "FULL"})))

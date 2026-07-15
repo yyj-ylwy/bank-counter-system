@@ -421,16 +421,16 @@ def repay_quote():
                "fund_account": fund_no, "fund_balance": fund_bal})
 
 
-# ---------- UC-405 第二步：还款（提前/按期/按期最低额；人民币账户还人民币卡，美元账户还美元卡）----------
+# ---------- UC-405 第二步：还款（提前全额/提前指定金额/按期最低额；人民币账户还人民币卡，美元账户还美元卡）----------
 @bp.post("/repay")
 @clerk
 def repay():
     d = _body()
     ident = (d.get("ident") or "").strip()
     card_type = (d.get("card_type") or "").strip()
-    repay_type = (d.get("repay_type") or "").strip().upper()  # FULL(提前) / SCHEDULED(按期) / MIN(按期最低额)
+    repay_type = (d.get("repay_type") or "").strip().upper()  # FULL(提前全额) / SCHEDULED(提前指定金额) / MIN(按期最低额)
     if repay_type not in ("FULL", "SCHEDULED", "MIN"):
-        return fail("E-OP", "还款方式非法（提前FULL/按期SCHEDULED/按期最低额MIN）", 400)
+        return fail("E-OP", "还款方式非法（提前全额FULL/提前指定金额SCHEDULED/按期最低额MIN）", 400)
     db = get_db()
     cc, cust, rerr = resolve_credit_card(db, ident, card_type=card_type)  # 凭身份+卡种定位唯一卡
     if rerr:
@@ -447,14 +447,14 @@ def repay():
         pay = outstanding
     elif repay_type == "MIN":
         pay = min(outstanding, min_amount if min_amount > 0 else outstanding)
-    else:  # SCHEDULED 按期还款：还指定金额（不低于最低还款额，多退到不超过欠款）
+    else:  # SCHEDULED 提前还款(指定金额)：还指定金额（不低于最低还款额，多退到不超过欠款）
         pay = D(d.get("amount") or 0)
         if pay <= 0:
-            return fail("E-AMT", "按期还款金额必须大于零", 400)
+            return fail("E-AMT", "指定还款金额必须大于零", 400)
         if pay > outstanding:
             pay = outstanding  # 多还的部分不扣，等同退回储蓄账户
         elif pay < min_amount:
-            return fail("E-2", f"按期还款不得低于最低还款额 {min_amount} {card_cur}")
+            return fail("E-2", f"指定还款金额不得低于最低还款额 {min_amount} {card_cur}")
 
     # 还款资金来源：人民币卡→人民币储蓄账户；美元卡→美元外汇子户
     if card_cur == "CNY":

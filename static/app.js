@@ -215,7 +215,7 @@ function selectOp(op, li) {
   const fieldsHtml = op.fields.map(f => {
     let h = renderField(f);
     if (op.lookup && f.n === op.lookup.byField)  // 查询回填按钮紧跟在定位字段(如工号/卡种)之后
-      h += `<div class="field full"><button type="button" class="btn btn-ghost" id="lookupBtn">${esc(op.lookup.btnLabel || '🔍 查询并回填')}</button> <small id="lookupInfo" class="hint"></small></div>`;
+      h += `<div class="field full lookup-row"><button type="button" class="btn" id="lookupBtn">${esc(op.lookup.btnLabel || '🔍 查询并回填')}</button><div id="lookupInfo" class="lookup-info"></div></div>`;
     return h;
   }).join('');
   const uploadHtml = op.type === 'upload' ? `<div class="field full"><label>备份文件</label><input type="file" id="f_file" accept=".json"></div>` : '';
@@ -267,8 +267,12 @@ async function runLookup(op) {
     el.innerHTML = opts.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('');
     if (opts.some(o => String(o.value) === cur)) el.value = cur;  // 保留原选择
   }
+  // lk.render(rec) 可选：返回受控 HTML 按行展示结果（数据须在回调里 esc）；否则用 lk.show 输出纯文本
   const info = $('lookupInfo');
-  if (info) info.textContent = lk.show ? lk.show(rec) : '';
+  if (info) {
+    if (lk.render) info.innerHTML = lk.render(rec);
+    else info.innerHTML = lk.show ? `<p class="hint">${esc(lk.show(rec))}</p>` : '';  // 纯文本仍走 esc
+  }
   banner('ok', lk.okMsg || '已带出当前信息，修改需要变更的项后点保存');
 }
 
