@@ -312,6 +312,8 @@ def consume():
     if cc["status"] != C.CC_ACTIVE:  # E-1 非正常卡不可消费
         return fail("E-1", f"信用卡状态为「{C.CC_STATUS_LABEL.get(cc['status'])}」，不可消费")
     spec = _spec(cc)
+    if not spec:  # 历史卡种（已不在产品目录）：无币种/费率/奖励定义，不予受理（否则取 spec 字段会崩 500）
+        return fail("E-CARDTYPE", f"该卡为历史卡种「{cc.get('card_type')}」，不在当前产品目录内，请为客户申请新卡种")
     card_cur = spec["currency"]
 
     card_amount, cerr = _convert(db, amount, currency, card_cur)  # 折算为本卡币种

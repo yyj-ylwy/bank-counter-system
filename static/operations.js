@@ -341,15 +341,28 @@ const OPERATIONS = {
         { n: 'repay_type', label: '还款方式', type: 'select', options: [{ value: 'FULL', label: '提前还款(全额结清)' }, { value: 'SCHEDULED', label: '按期还款(指定金额)' }, { value: 'MIN', label: '按期最低额还款' }] },
         { n: 'amount', label: '还款金额（按期还款填）', type: 'number' },
       ],
-      // 第一步：确认卡种 → 试算该卡各还款方式应还金额；第二步：选还款方式确认还款
+      // 第一步：填身份+选卡种 →「确认不同还款情况下的应还金额」，各方式金额直接显示进还款方式下拉；
+      // 第二步：在下拉里看着金额选还款方式 →「确认还款」
       lookup: {
         byField: 'card_type',
-        btnLabel: '🔍 第一步：确认卡种，查询应还金额',
+        btnLabel: '💡 确认不同还款情况下的应还金额',
         path: '/api/creditcard/repay-quote',
         query: v => ({ ident: v.ident, card_type: v.card_type }),
         find: q => q,
         fill: q => ({ amount: q.outstanding > 0 ? q.outstanding : '' }),  // 按期还款金额默认带出全额，可改
-        okMsg: '已带出该卡应还金额，请选择还款方式后点「确认还款」',
+        okMsg: '应还金额已带出：请在「还款方式」下拉中查看全额/最低额各应还多少，选定后点「确认还款」',
+        // 把应还金额写进还款方式下拉，选的时候就能看到具体数字
+        options: q => ({
+          repay_type: q.outstanding > 0 ? [
+            { value: 'FULL', label: `提前还款(全额结清)　应还 ${money(q.outstanding)} ${q.currency}` },
+            { value: 'SCHEDULED', label: `按期还款(指定金额)　不低于最低额 ${money(q.min_amount)} ${q.currency}` },
+            { value: 'MIN', label: `按期最低额还款　应还 ${money(q.min_amount)} ${q.currency}（剩余本金本月计息约 ${money(q.min_interest)} ${q.currency}）` },
+          ] : [
+            { value: 'FULL', label: '提前还款(全额结清)　当前无欠款' },
+            { value: 'SCHEDULED', label: '按期还款(指定金额)　当前无欠款' },
+            { value: 'MIN', label: '按期最低额还款　当前无欠款' },
+          ],
+        }),
         show: q => q.outstanding > 0
           ? `${q.credit_card.card_type} ${q.credit_card.card_no}｜提前还款(全额结清) ${money(q.outstanding)} ${q.currency}｜按期最低额还款 ${money(q.min_amount)} ${q.currency}（剩余本金本月计息约 ${money(q.min_interest)} ${q.currency}）｜还款账户 ${q.fund_account || '（无可用账户）'}${q.fund_balance == null ? '' : '，余额 ' + money(q.fund_balance) + ' ' + q.currency}`
           : `${q.credit_card.card_type} ${q.credit_card.card_no}｜当前无欠款，无需还款`,

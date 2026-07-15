@@ -430,6 +430,21 @@ def t_creditcard():
     ok("4Q 按身份查到 [条件]", OK(api("GET", "/api/creditcard/query", CCK, query={"ident": vid})))
     ok("4Q 未找到→E-1 [判定]", E(api("GET", "/api/creditcard/query", CCK, query={"ident": "X"})) == "E-1")
 
+    # ---------- 历史卡种（重做前的普卡）：不予受理、且启动时被清理 ----------
+    lg = open_acct(bal="1000")
+    lgc = db.customer.find_one({"id_no": lg["id_no"]})
+    db.credit_card.insert_one({
+        "card_no": "5187999999999999", "customer_id": lgc["_id"], "user_id": None,
+        "card_type": "普卡", "currency": "CNY", "credit_limit": m(10000), "available_limit": m(10000),
+        "bill_day": 5, "repay_day": 20, "status": C.CC_ACTIVE, "created_at": now()})
+    ok("404 历史卡种消费→E-CARDTYPE(不崩500) [健壮]", E(api("POST", "/api/creditcard/consume", CCK, json={
+        "ident": "5187999999999999", "currency": "CNY", "amount": "100"})) == "E-CARDTYPE")
+    from seed import run_seed as _run_seed
+    _run_seed()  # 启动迁移：清理不符合新卡种目录的历史卡
+    ok("SEED 启动清理历史卡种旧卡 [迁移]", db.credit_card.find_one({"card_no": "5187999999999999"}) is None
+       and db.credit_card.count_documents({"card_type": {"$nin": C.CARD_TYPES}}) == 0)
+    ok("SEED 清理不误伤新卡种卡 [迁移]", db.credit_card.count_documents({"card_type": {"$in": C.CARD_TYPES}}) > 0)
+
 
 # ==================== 系统管理 UC-501 ~ 504 ====================
 def t_admin():

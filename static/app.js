@@ -259,6 +259,14 @@ async function runLookup(op) {
     const el = $('f_' + name);
     if (el) el.value = (val == null ? '' : String(val));
   }
+  // lk.options(rec) 可选：按查询结果重建下拉的选项文案（如把各方式应还金额显示进「还款方式」下拉）
+  for (const [name, opts] of Object.entries(lk.options ? lk.options(rec) : {})) {
+    const el = $('f_' + name);
+    if (!el) continue;
+    const cur = el.value;
+    el.innerHTML = opts.map(o => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('');
+    if (opts.some(o => String(o.value) === cur)) el.value = cur;  // 保留原选择
+  }
   const info = $('lookupInfo');
   if (info) info.textContent = lk.show ? lk.show(rec) : '';
   banner('ok', lk.okMsg || '已带出当前信息，修改需要变更的项后点保存');

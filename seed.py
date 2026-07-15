@@ -82,6 +82,8 @@ def run_seed():
     admin = db.user_account.find_one({"role": C.ROLE_ADMIN})
     admin_id = admin["_id"] if admin else None
 
+    _purge_legacy_cards(db)
+
     # --- 系统参数（缺失才补，已有的不覆盖）---
     for ptype, key, val in DEFAULT_PARAMS:
         if db.system_param.count_documents({"param_key": key}) == 0:
@@ -135,6 +137,26 @@ def run_seed():
         _seed_prices(db)
         _seed_holdings(db)
         print(f"[seed] 已创建 {len(INVEST_PRODUCTS)} 个演示理财产品及历史行情")
+
+
+def _purge_legacy_cards(db):
+    """清理不符合当前卡种目录的历史信用卡（信用卡模块重做前的普卡/金卡/白金卡等）。
+
+    这些卡的卡种已不在 CARD_SPECS 中，没有币种/额度/返现/积分/费率定义，既无法用
+    「身份+卡种」定位，也不能参与新的消费/还款规则，故予以删除（连同其历史账单）。
+    幂等：清理后不再命中，可安全地随每次启动执行。
+    注意：只删卡与账单，不删 business_transaction —— 取现入账等流水曾真实改变过储蓄账户
+    余额，删掉会破坏「账户余额 = 流水净额」的对账不变式；历史流水按原样保留。
+    """
+    legacy = list(db.credit_card.find({"card_type": {"$nin": C.CARD_TYPES}},
+                                      {"_id": 1, "card_no": 1, "card_type": 1}))
+    if not legacy:
+        return
+    ids = [c["_id"] for c in legacy]
+    bills = db.credit_card_bill.delete_many({"credit_card_id": {"$in": ids}}).deleted_count
+    db.credit_card.delete_many({"_id": {"$in": ids}})
+    detail = "、".join(f"{c.get('card_type')}/{c['card_no']}" for c in legacy)
+    print(f"[seed] 已清理 {len(legacy)} 张历史卡种信用卡（及 {bills} 条历史账单）：{detail}")
 
 
 def _seed_prices(db):
