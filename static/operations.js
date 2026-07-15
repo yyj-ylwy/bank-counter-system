@@ -302,7 +302,43 @@ const OPERATIONS = {
         { n: 'repay_day', label: '还款日', type: 'number', hint: '新卡审批填，每月几号前还款 1-28' },
         { n: 'reason', label: '拒绝原因', hint: '仅拒绝时填写' },
       ],
-      hint: '凭身份+卡种定位唯一卡（无需卡号）。新卡审批按卡种默认额度激活；提额审批新额度不得高于存款的 30%。',
+      // 第一步：填身份+选卡种 →「确认审批事项」，带出客户是要批卡还是提额、以及提额的审批依据与建议；
+      // 第二步：给出审批结论 →「提交审批结论」
+      lookup: {
+        byField: 'card_type',
+        btnLabel: '确认审批事项',
+        path: '/api/creditcard/approve-quote',
+        query: v => ({ ident: v.ident, card_type: v.card_type }),
+        find: q => q,
+        okMsg: '已带出审批事项，请核对后选择审批结论并「提交审批结论」',
+        // 按行展示：审批事项 + 卡信息；提额另带 当前额度/申请后额度/对应账户余额/上限/建议(红绿)
+        render: q => {
+          const cur = esc(q.currency);
+          const rows = [
+            ['审批事项', q.purpose === 'NONE' ? `<span class="bad">${esc(q.purpose_label)}</span>` : `<strong>${esc(q.purpose_label)}</strong>`],
+            ['卡号', esc(q.credit_card.card_no)],
+            ['卡种', `${esc(q.credit_card.card_type)}（${cur}）`],
+          ];
+          if (q.purpose === 'NEW_CARD') {
+            rows.push(['卡片状态', esc(q.credit_card.status_label)]);
+            rows.push(['通过后授予额度', `${esc(money(q.grant_limit))} ${cur}　<span class="hint-inline">按卡种默认额度</span>`]);
+          } else if (q.purpose === 'INCREASE') {
+            rows.push(['当前额度', `${esc(money(q.current_limit))} ${cur}`]);
+            rows.push(['申请后额度', `${esc(money(q.new_limit))} ${cur}`]);
+            rows.push([q.currency === 'CNY' ? '人民币储蓄账户余额' : '美元外汇子户余额',
+              q.acct_no ? `${esc(q.acct_no)}　${esc(money(q.acct_balance))} ${cur}`
+                : `<span class="bad">未找到对应币种账户</span>`]);
+            rows.push([`提额上限（存款×${esc((q.ratio * 100).toFixed(0))}%）`,
+              `${esc(money(q.cap_cny))} CNY　<span class="hint-inline">存款合计折 ${esc(money(q.deposit_cny))} CNY；申请额度折 ${q.new_limit_cny == null ? '—' : esc(money(q.new_limit_cny))} CNY</span>`]);
+            const cls = q.advise === 'APPROVE' ? 'good' : 'bad';
+            rows.push(['审批建议', `<span class="${cls}">${esc(q.advise_label)}</span>　<span class="hint-inline">${esc(q.advise_reason)}</span>`]);
+          } else {
+            rows.push(['说明', `<span class="bad">${esc(q.note || '')}</span>`]);
+          }
+          return kvRows(rows);
+        },
+      },
+      hint: '两步：① 填身份、选卡种后点「确认审批事项」，带出客户是申请新卡还是提额（提额会给出额度/余额对比与红绿建议）；② 再选审批结论点「提交审批结论」。新卡按卡种默认额度激活；提额新额度不得高于存款的 30%。',
       result: d => {
         if (!d.credit_card) return '';
         const c = d.credit_card, base = { '卡号': c.card_no, '卡种': c.card_type, '状态': c.status_label };

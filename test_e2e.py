@@ -337,7 +337,13 @@ def t_creditcard():
     # 每人每种卡最多一张：同种卡再申请（原卡未终止）→ E-DUP
     ok("401 同种卡再申请→E-DUP [规则]", E(api("POST", "/api/creditcard/apply", CCK, json={"ident": cid, "card_type": "银联白金卡"})) == "E-DUP")
 
-    # UC-402 审批（凭 身份+卡种 定位唯一卡，无需卡号；按卡种默认额度激活）
+    # UC-402 第一步：确认审批事项（此时是待审新卡）
+    aq = api("GET", "/api/creditcard/approve-quote", CCK, query={"ident": cid, "card_type": "银联白金卡"})
+    ok("402 审批事项=批卡&带出将授予额度20000 [查询]", OK(aq) and aq["data"]["purpose"] == "NEW_CARD"
+       and abs(aq["data"]["grant_limit"] - 20000.0) < 0.01)
+    ok("402 审批事项:卡种不符→E-NOCARD [判定]", E(api("GET", "/api/creditcard/approve-quote", CCK, query={"ident": cid, "card_type": "Visa Platinum"})) == "E-NOCARD")
+
+    # UC-402 第二步：审批（凭 身份+卡种 定位唯一卡，无需卡号；按卡种默认额度激活）
     ok("402 决策非法→E-OP [判定]", E(api("POST", "/api/creditcard/approve", CCK, json={"ident": cid, "card_type": "银联白金卡", "decision": "MAYBE"})) == "E-OP")
     ok("402 无此卡种→E-NOCARD [判定]", E(api("POST", "/api/creditcard/approve", CCK, json={"ident": cid, "card_type": "Visa Platinum", "decision": "APPROVED"})) == "E-NOCARD")
     ok("402 账单日越界→E-DAY [边界]", E(api("POST", "/api/creditcard/approve", CCK, json={"ident": cid, "card_type": "银联白金卡", "decision": "APPROVED", "bill_day": "30", "repay_day": "20"})) == "E-DAY")
@@ -382,6 +388,13 @@ def t_creditcard():
     # UC-403 提额申请 + UC-402 提额审批（新额度不得高于存款的 30%）
     ok("403 提额低于当前→E-1 [边界]", E(api("POST", "/api/creditcard/increase-limit", CCK, json={"ident": cid, "card_type": "银联白金卡", "new_limit": "15000"})) == "E-1")
     ok("403 提额申请成功(挂起) [正常流]", OK(api("POST", "/api/creditcard/increase-limit", CCK, json={"ident": cid, "card_type": "银联白金卡", "new_limit": "25000"})))
+    # 审批事项应变为提额，且建议拒绝（25000 > 存款约4.9万的30%）
+    aq2 = api("GET", "/api/creditcard/approve-quote", CCK, query={"ident": cid, "card_type": "银联白金卡"})
+    ok("402 审批事项=提额&带出当前/申请后额度 [查询]", OK(aq2) and aq2["data"]["purpose"] == "INCREASE"
+       and abs(aq2["data"]["current_limit"] - 20000.0) < 0.01 and abs(aq2["data"]["new_limit"] - 25000.0) < 0.01)
+    ok("402 审批事项:带出对应币种账户余额 [查询]", OK(aq2) and bool(aq2["data"]["acct_no"]) and aq2["data"]["acct_balance"] > 0)
+    ok("402 审批建议=拒绝(超30%上限) [规则]", OK(aq2) and aq2["data"]["advise"] == "REJECT"
+       and aq2["data"]["new_limit_cny"] > aq2["data"]["cap_cny"])
     ok("402 提额超存款30%被拒→E-1 [规则]", E(api("POST", "/api/creditcard/approve", CCK, json={"ident": cid, "card_type": "银联白金卡", "decision": "APPROVED"})) == "E-1")
     # 大额存款客户：银联钻石卡默认 10 万，提额至 12 万（≤ 50万×30%=15万）应通过
     big = open_acct(bal="500000")
@@ -391,6 +404,9 @@ def t_creditcard():
     dq = api("GET", "/api/creditcard/query", CCK, query={"ident": bid})
     ok("402 钻石卡默认额度=100000 [金额]", OK(dq) and dq["data"]["cards"][0]["credit_limit"] == 100000.0)
     api("POST", "/api/creditcard/increase-limit", CCK, json={"ident": bid, "card_type": "银联钻石卡", "new_limit": "120000"})
+    aq3 = api("GET", "/api/creditcard/approve-quote", CCK, query={"ident": bid, "card_type": "银联钻石卡"})
+    ok("402 审批建议=通过(未超30%上限) [规则]", OK(aq3) and aq3["data"]["advise"] == "APPROVE"
+       and aq3["data"]["new_limit_cny"] <= aq3["data"]["cap_cny"])
     dinc = api("POST", "/api/creditcard/approve", CCK, json={"ident": bid, "card_type": "银联钻石卡", "decision": "APPROVED"})
     ok("402 提额审批通过(≤30%)&额度=120000 [规则]", OK(dinc) and dinc["data"]["credit_card"]["credit_limit"] == 120000.0)
 
@@ -400,6 +416,9 @@ def t_creditcard():
     api("POST", "/api/creditcard/apply", CCK, json={"ident": vid, "card_type": "Visa Platinum"})
     vq0 = api("POST", "/api/creditcard/approve", CCK, json={"ident": vid, "card_type": "Visa Platinum", "decision": "APPROVED", "bill_day": "5", "repay_day": "20"})
     ok("401 Visa 卡币种=USD&默认额度20000 [正常流]", OK(vq0) and vq0["data"]["credit_card"]["currency"] == "USD" and vq0["data"]["credit_card"]["credit_limit"] == 20000.0)
+    aqn = api("GET", "/api/creditcard/approve-quote", CCK, query={"ident": vid, "card_type": "Visa Platinum"})
+    ok("402 已激活且无提额→审批事项=NONE [判定]", OK(aqn) and aqn["data"]["purpose"] == "NONE")
+    ok("402 无待审批事项仍审批→E-STATE [判定]", E(api("POST", "/api/creditcard/approve", CCK, json={"ident": vid, "card_type": "Visa Platinum", "decision": "APPROVED"})) == "E-STATE")
     rvc = api("POST", "/api/creditcard/consume", CCK, json={"ident": vid, "card_type": "Visa Platinum", "currency": "USD", "amount": "100"})
     ok("404 Visa 消费得积分(100×7=700)&无外币费 [金额]", OK(rvc) and rvc["data"]["reward"]["type"] == "POINTS" and rvc["data"]["reward"]["points"] == 700 and rvc["data"]["fee"] == 0.0)
     # 同一客户再办 MasterCard World Elite（不同卡种，允许），消费得积分并累加到同一账户

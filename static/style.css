@@ -152,6 +152,7 @@ body {
 .lookup-info table.kv { margin: 0; }
 .lookup-info table.kv td { overflow-wrap: anywhere; }
 .bad { color: var(--err); font-weight: 500; }
+.good { color: var(--ok); font-weight: 500; }
 .hint-inline { color: var(--muted); font-size: 12px; }
 .hint {
   color: #5a6675; font-size: 13px; margin: 12px 0; padding: 9px 13px;

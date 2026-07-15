@@ -71,6 +71,21 @@ def _convert(db, amount, from_cur, to_cur):
     return D(cny / dec(r["mid"])), None
 
 
+def _fund_account(db, ident, card_cur):
+    """取该客户与本卡币种对应的资金账户：人民币→储蓄账户；外币→该币种外汇子户。
+    还款扣款、审批看余额都用它。返回 (账号 或 None, 余额 float 或 None)。"""
+    if card_cur == "CNY":
+        account_no, _c, aerr = resolve_account_no(db, ident)
+        if aerr:
+            return None, None
+        acc = db.account.find_one({"account_no": account_no})
+        return (account_no, float(dec(acc["balance"]))) if acc else (None, None)
+    fx, ferr = resolve_fx_account(db, ident, card_cur)
+    if ferr:
+        return None, None
+    return fx["fx_account_no"], float(dec(fx["balance"]))
+
+
 def _total_deposit_cny(db, customer_id, session=None):
     """客户名下总存款折人民币：储蓄账户余额 + 各外汇子户余额折 CNY。"""
     total = D(0)
@@ -168,7 +183,63 @@ def apply():
               f"{card_type} 申请已提交（默认额度 {spec['default_limit']} {spec['currency']}），状态：待审核")
 
 
-# ---------- UC-402 审批（新卡审批 与 提额审批 同一处）----------
+# ---------- UC-402 第一步：确认审批事项（只读）：这张卡客户是要批卡还是提额？----------
+@bp.get("/approve-quote")
+@clerk
+def approve_quote():
+    db = get_db()
+    ident = (request.args.get("ident") or "").strip()
+    card_type = (request.args.get("card_type") or "").strip()
+    cc, cust, rerr = resolve_credit_card(db, ident, card_type=card_type)  # 凭身份+卡种定位唯一卡
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    spec = _spec(cc)
+    card_cur = _card_currency(cc)
+    lr = cc.get("limit_req")
+    data = {"credit_card": cc_view(cc, cust), "currency": card_cur}
+
+    if cc["status"] == C.CC_PENDING:            # 事项一：新卡申请待审
+        data.update({"purpose": "NEW_CARD", "purpose_label": "新卡申请审批",
+                     "grant_limit": float(D(spec.get("default_limit", "0")))})
+        return ok(data)
+
+    if lr and lr.get("status") == "PENDING":    # 事项二：提额申请待审
+        new_limit = dec(lr["new_limit"])
+        ratio = get_param_dec(db, C.P_CC_LIMIT_DEPOSIT_RATIO, "0.30")
+        acct_no, acct_bal = _fund_account(db, ident, card_cur)   # 本卡币种对应账户余额
+        # 审批依据与 approve() 完全一致：新额度折人民币 ≤ 存款合计(折人民币) × 比例
+        new_limit_cny, cerr = _to_cny(db, new_limit, card_cur)
+        deposit_cny = _total_deposit_cny(db, cc["customer_id"])
+        cap_cny = D(deposit_cny * ratio)
+        data.update({
+            "purpose": "INCREASE", "purpose_label": "提高信用额审批",
+            "current_limit": float(dec(cc["credit_limit"])),
+            "new_limit": float(new_limit),
+            "acct_no": acct_no, "acct_balance": acct_bal,
+            "ratio": float(ratio), "deposit_cny": float(deposit_cny), "cap_cny": float(cap_cny),
+            "new_limit_cny": None if cerr else float(new_limit_cny),
+            "requested_at": lr.get("requested_at"), "reason": lr.get("reason"),
+        })
+        if cerr:  # 汇率不可用则给不出建议，如实说明（不臆造绿灯）
+            data.update({"advise": None, "advise_label": "无法判定",
+                         "advise_reason": f"额度折算汇率暂不可用：{cerr}"})
+        elif new_limit_cny <= cap_cny:
+            data.update({"advise": "APPROVE", "advise_label": "建议通过",
+                         "advise_reason": f"新额度折 {new_limit_cny} 元，未超过存款({deposit_cny}元)的"
+                                          f"{ratio * 100:.0f}%（上限 {cap_cny} 元）"})
+        else:
+            data.update({"advise": "REJECT", "advise_label": "建议拒绝",
+                         "advise_reason": f"新额度折 {new_limit_cny} 元，超过存款({deposit_cny}元)的"
+                                          f"{ratio * 100:.0f}%（上限 {cap_cny} 元），超出 {D(new_limit_cny - cap_cny)} 元"})
+        return ok(data)
+
+    data.update({"purpose": "NONE", "purpose_label": "无待审批事项",
+                 "note": f"该卡当前为「{C.CC_STATUS_LABEL.get(cc['status'], cc['status'])}」，"
+                         f"既无待审新卡申请，也无待审提额申请"})
+    return ok(data)
+
+
+# ---------- UC-402 第二步：审批（新卡审批 与 提额审批 同一处）----------
 @bp.post("/approve")
 @clerk
 def approve():
@@ -402,16 +473,7 @@ def repay_quote():
     min_interest = D((outstanding - min_amount) * interest_rate) if outstanding > min_amount else D(0)
 
     # 还款资金来源：人民币卡→人民币储蓄账户；美元卡→美元外汇子户
-    fund_no, fund_bal = None, None
-    if card_cur == "CNY":
-        account_no, _c, aerr = resolve_account_no(db, ident)
-        if not aerr:
-            acc = db.account.find_one({"account_no": account_no})
-            fund_no, fund_bal = account_no, float(dec(acc["balance"]))
-    else:
-        fx, ferr = resolve_fx_account(db, ident, card_cur)
-        if not ferr:
-            fund_no, fund_bal = fx["fx_account_no"], float(dec(fx["balance"]))
+    fund_no, fund_bal = _fund_account(db, ident, card_cur)
 
     return ok({"credit_card": cc_view(cc, cust), "currency": card_cur,
                "outstanding": float(outstanding),      # 提前还款(全额结清)应还
