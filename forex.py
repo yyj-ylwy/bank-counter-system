@@ -126,7 +126,7 @@ def refresh_rates(db, currency):
     汇率记录全系统共用、保质期 1 小时：记录未过期则直接用、不调 API。
     返回 (rate_dict{mid,buy,sell,as_of} 或 None, error 或 None, from_cache_bool)。"""
     currency = (currency or "").strip().upper()
-    if currency not in C.PARAM_FX:
+    if currency not in C.SUPPORTED_CURRENCIES:
         return None, "不支持的币种", False
     now_m = time.monotonic()
     cached = _rate_cache.get(currency)
@@ -152,7 +152,7 @@ def refresh_rates(db, currency):
 def read_rate(db, currency, direction):
     """取某币种按方向的适用牌价：BUY=客户买入外币(用卖出价) / SELL=客户卖出外币(用买入价)。
     返回 (rate, rate_type) 或 (None, None)。牌价来自全系统共用的汇率记录（保质期 1 小时）。"""
-    if currency not in C.PARAM_FX:
+    if currency not in C.SUPPORTED_CURRENCIES:
         return None, None
     r, _err, _c = refresh_rates(db, currency)  # 单币种向 AV 实时拉取
     if not r:
@@ -169,7 +169,7 @@ def live_rate():
     cur = (request.args.get("currency") or "").strip().upper()
     if not cur:
         return fail("E-CUR", "请选择要查询的币种", 400)
-    if cur not in C.PARAM_FX:
+    if cur not in C.SUPPORTED_CURRENCIES:
         return fail("E-CUR", "不支持的币种", 400)
     r, err, cached = refresh_rates(db, cur)  # 单币种：AV 实时（不触发批量限流）
     if not r:

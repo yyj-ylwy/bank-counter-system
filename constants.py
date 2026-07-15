@@ -101,18 +101,9 @@ RESULT_SUCCESS = "SUCCESS"
 RESULT_FAILURE = "FAILURE"
 
 # ---- 系统参数键（system_param.param_key）----
-# 外汇牌价：买入价=银行向客户买外币的价（客户卖出用），卖出价=银行卖外币给客户的价（客户买入用）
-PARAM_FX = {
-    "USD": ("FX_USD_BUY", "FX_USD_SELL"),
-    "EUR": ("FX_EUR_BUY", "FX_EUR_SELL"),
-    "JPY": ("FX_JPY_BUY", "FX_JPY_SELL"),
-    "GBP": ("FX_GBP_BUY", "FX_GBP_SELL"),
-    "HKD": ("FX_HKD_BUY", "FX_HKD_SELL"),
-    "AUD": ("FX_AUD_BUY", "FX_AUD_SELL"),
-    "CAD": ("FX_CAD_BUY", "FX_CAD_SELL"),
-    "CHF": ("FX_CHF_BUY", "FX_CHF_SELL"),
-    "SGD": ("FX_SGD_BUY", "FX_SGD_SELL"),
-}
+# 注：不再有「每币种买入价/卖出价」参数。全行买卖价一律由实时中间价按统一点差推算：
+#     卖出价(银行卖/客户买)=中间价×(1+FX_SPREAD)、买入价(银行买/客户卖)=中间价×(1-FX_SPREAD)，
+#     见 forex.quote_from_mid。点差只有 FX_SPREAD 这一个旋钮（默认 0.3%）。
 SUPPORTED_CURRENCIES = ["USD", "EUR", "JPY", "GBP", "HKD", "AUD", "CAD", "CHF", "SGD"]
 
 P_LOAN_RATE = "LOAN_RATE"                       # 贷款年利率
@@ -175,12 +166,11 @@ TXN_AMOUNT_MAX = 100_000_000    # 单笔存/取/转账金额上限（1 亿），
 LOAN_TERM_MAX = 360             # 贷款期限上限（月），防到期日计算溢出
 TEXT_MAX = 200                  # 备注/原因等自由文本长度上限
 # 合法系统参数键白名单（= seed 落库的键集），维护参数只允许改这些，杜绝写入孤儿键
-ALLOWED_PARAM_KEYS = (
-    {k for pair in PARAM_FX.values() for k in pair}
-    | {P_LOAN_RATE, P_LOAN_OVERDUE_RATE, P_WITHDRAW_DAILY_LIMIT, P_TRANSFER_FEE_RATE,
-       P_CC_LIMIT_MAX, P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_CC_CASH_DAILY_LIMIT,
-       P_CC_MIN_INTEREST_RATE, P_CC_LIMIT_DEPOSIT_RATIO, P_FX_SPREAD}
-)
+ALLOWED_PARAM_KEYS = {
+    P_LOAN_RATE, P_LOAN_OVERDUE_RATE, P_WITHDRAW_DAILY_LIMIT, P_TRANSFER_FEE_RATE,
+    P_CC_LIMIT_MAX, P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_CC_CASH_DAILY_LIMIT,
+    P_CC_MIN_INTEREST_RATE, P_CC_LIMIT_DEPOSIT_RATIO, P_FX_SPREAD,
+}
 # 属于"比例/费率"的参数键（业务上应落在 0~1），维护时额外做上限校验
 RATE_PARAM_KEYS = {P_LOAN_RATE, P_LOAN_OVERDUE_RATE, P_TRANSFER_FEE_RATE,
                    P_CC_MIN_REPAY_RATE, P_CC_CASH_FEE_RATE, P_CC_MIN_INTEREST_RATE,

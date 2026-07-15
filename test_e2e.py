@@ -523,9 +523,17 @@ def t_admin():
     ok("502b 费率=1边界成功 [边界]", OK(api("POST", "/api/admin/params", AD, json={"param_key": "CC_MIN_REPAY_RATE", "param_value": "1"})))
     ok("502b 限额>1成功(非费率) [组合]", OK(api("POST", "/api/admin/params", AD, json={"param_key": "WITHDRAW_DAILY_LIMIT", "param_value": "60000"})))
     ok("502b 正常保存成功 [正常流]", OK(api("POST", "/api/admin/params", AD, json={"param_key": "TRANSFER_FEE_RATE", "param_value": "0.001"})))
-    # 外汇牌价一致性：重构后牌价不再落种子，需先存卖出价 7，再让买入价 8>7 触发 E-1（业务一致性校验）
-    api("POST", "/api/admin/params", AD, json={"param_key": "FX_USD_SELL", "param_value": "7"})
-    ok("502b 买入价>卖出价→E-1 [业务]", E(api("POST", "/api/admin/params", AD, json={"param_key": "FX_USD_BUY", "param_value": "8"})) == "E-1")
+    # 每币种买入价/卖出价参数已废弃（全行买卖价 = 实时中间价 ± FX_SPREAD），不再可维护
+    ok("502b 废弃的外汇买卖价参数→E-1 [业务]", E(api("POST", "/api/admin/params", AD, json={"param_key": "FX_USD_BUY", "param_value": "7"})) == "E-1")
+    ok("502b 点差 FX_SPREAD 仍可维护 [正常流]", OK(api("POST", "/api/admin/params", AD, json={"param_key": "FX_SPREAD", "param_value": "0.003"})))
+    # 启动迁移：库里遗留的废弃买卖价参数会被清掉
+    db.system_param.insert_one({"param_type": "FX_RATE", "param_key": "FX_USD_SELL",
+                                "param_value": "7", "changed_at": now()})
+    from seed import run_seed as _rs
+    _rs()
+    ok("SEED 清理废弃的外汇买卖价参数 [迁移]",
+       db.system_param.count_documents({"param_key": {"$regex": r"^FX_[A-Z]{3}_(BUY|SELL)$"}}) == 0)
+    ok("SEED 清理不误伤 FX_SPREAD [迁移]", db.system_param.find_one({"param_key": "FX_SPREAD"}) is not None)
     # 503 审计
     ok("503 无筛选查询成功 [正常流]", OK(api("GET", "/api/admin/audit", AD, query={})))
     ok("503 用户不存在→空结果 [组合]", OK(api("GET", "/api/admin/audit", AD, query={"employee_no": "NOPE"})))

@@ -61,10 +61,9 @@ const OBJECT_OPTIONS = [{ value: '', label: '全部' }].concat(Object.entries(OB
 
 // 系统参数：把数据库里的英文键/类型翻译成普通人看得懂的中文（面向柜员/管理员，非开发者）
 const PARAM_TYPE_LABEL = { RATE: '利率', LIMIT: '限额', FX_RATE: '汇率', OTHER: '其他' };
+// 注：不再有「每币种买入价/卖出价」参数——全行买卖价一律由实时中间价按 FX_SPREAD 统一推算
+// （卖出价=中间价×(1+点差)、买入价=中间价×(1-点差)），点差只有 FX_SPREAD 这一个旋钮。
 const PARAM_NAME = {
-  FX_USD_BUY: '美元买入价', FX_USD_SELL: '美元卖出价',
-  FX_EUR_BUY: '欧元买入价', FX_EUR_SELL: '欧元卖出价',
-  FX_JPY_BUY: '日元买入价', FX_JPY_SELL: '日元卖出价',
   LOAN_RATE: '贷款默认年利率', LOAN_OVERDUE_RATE: '逾期日罚息率',
   WITHDRAW_DAILY_LIMIT: '单日取款上限', TRANSFER_FEE_RATE: '转账手续费率',
   CC_CREDIT_LIMIT_MAX: '信用卡最高授信额度', CC_MIN_REPAY_RATE: '信用卡最低还款比例',

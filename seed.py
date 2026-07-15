@@ -84,6 +84,7 @@ def run_seed():
     admin_id = admin["_id"] if admin else None
 
     _purge_legacy_cards(db)
+    _purge_legacy_fx_params(db)
 
     # --- 系统参数（缺失才补，已有的不覆盖）---
     for ptype, key, val in DEFAULT_PARAMS:
@@ -158,6 +159,21 @@ def _purge_legacy_cards(db):
     db.credit_card.delete_many({"_id": {"$in": ids}})
     detail = "、".join(f"{c.get('card_type')}/{c['card_no']}" for c in legacy)
     print(f"[seed] 已清理 {len(legacy)} 张历史卡种信用卡（及 {bills} 条历史账单）：{detail}")
+
+
+def _purge_legacy_fx_params(db):
+    """清理已废弃的「每币种买入价/卖出价」系统参数（FX_USD_BUY / FX_USD_SELL / ...）。
+
+    全行买卖价一律由实时中间价按 FX_SPREAD 统一推算（卖出=中间价×(1+点差)、买入=中间价×(1-点差)），
+    这组参数早已没有任何代码读取——留在库里会被管理员参数页列出来，让人误以为改了能生效。
+    幂等：清理后不再命中。只删这组键，不动 FX_SPREAD 等仍在生效的参数。
+    """
+    q = {"param_key": {"$regex": r"^FX_[A-Z]{3}_(BUY|SELL)$"}}
+    keys = [p["param_key"] for p in db.system_param.find(q, {"param_key": 1})]
+    if not keys:
+        return
+    db.system_param.delete_many(q)
+    print(f"[seed] 已清理 {len(keys)} 个废弃的外汇买卖价参数：{'、'.join(sorted(keys))}")
 
 
 def _seed_prices(db):
