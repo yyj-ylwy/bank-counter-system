@@ -361,7 +361,14 @@ def t_creditcard():
     rec = api("GET", "/api/creditcard/records", CCK, query={"ident": cid, "card_type": "银联白金卡"})
     ok("406 本月消费记录(合计=1000) [查询]", OK(rec) and abs(rec["data"]["consume_total"] - 1000.0) < 0.01 and len(rec["data"]["records"]) >= 1)
 
-    # UC-405 还款（身份+卡种定位；人民币卡用人民币储蓄账户还）
+    # UC-405 第一步：确认卡种后试算各方式应还金额（欠款1000 → 提前1000/最低100/剩余900本月计息45）
+    quote = api("GET", "/api/creditcard/repay-quote", CCK, query={"ident": cid, "card_type": "银联白金卡"})
+    ok("405 试算:提前还款应还=1000 [查询]", OK(quote) and abs(quote["data"]["outstanding"] - 1000.0) < 0.01)
+    ok("405 试算:最低额=100&剩余本金计息=45 [金额]", OK(quote) and abs(quote["data"]["min_amount"] - 100.0) < 0.01 and abs(quote["data"]["min_interest"] - 45.0) < 0.01)
+    ok("405 试算:带出币种与还款账户 [查询]", OK(quote) and quote["data"]["currency"] == "CNY" and bool(quote["data"]["fund_account"]))
+    ok("405 试算:卡种不符→E-NOCARD [判定]", E(api("GET", "/api/creditcard/repay-quote", CCK, query={"ident": cid, "card_type": "Visa Platinum"})) == "E-NOCARD")
+
+    # UC-405 第二步：还款（身份+卡种定位；人民币卡用人民币储蓄账户还）
     ok("405 还款方式非法→E-OP [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "XX"})) == "E-OP")
     ok("405 按期金额0→E-AMT [边界]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "SCHEDULED", "amount": "0"})) == "E-AMT")
     ok("405 按期<最低额→E-2 [组合]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "SCHEDULED", "amount": "50"})) == "E-2")
@@ -369,6 +376,8 @@ def t_creditcard():
     ok("405 最低额还款成功&剩余本金计息 [正常流]", OK(rmin) and rmin["data"]["interest"] > 0)
     ok("405 提前(全额)还款结清 [正常流]", OK(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "FULL"})))
     ok("405 无欠款再还→E-3 [判定]", E(api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "FULL"})) == "E-3")
+    q0 = api("GET", "/api/creditcard/repay-quote", CCK, query={"ident": cid, "card_type": "银联白金卡"})
+    ok("405 结清后试算应还=0 [边界]", OK(q0) and q0["data"]["outstanding"] == 0.0 and q0["data"]["min_amount"] == 0.0 and q0["data"]["min_interest"] == 0.0)
 
     # UC-403 提额申请 + UC-402 提额审批（新额度不得高于存款的 30%）
     ok("403 提额低于当前→E-1 [边界]", E(api("POST", "/api/creditcard/increase-limit", CCK, json={"ident": cid, "card_type": "银联白金卡", "new_limit": "15000"})) == "E-1")

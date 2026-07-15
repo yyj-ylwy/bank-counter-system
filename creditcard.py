@@ -381,7 +381,45 @@ def consume():
     return ok(res, f"消费成功，扣减可用额度 {res['card_amount'] + res['fee']} {res['card_currency']}{tail}")
 
 
-# ---------- UC-405 还款（提前/按期/按期最低额；人民币账户还人民币卡，美元账户还美元卡）----------
+# ---------- UC-405 第一步：确认卡种后试算各还款方式的应还金额（只读，不动账）----------
+@bp.get("/repay-quote")
+@clerk
+def repay_quote():
+    db = get_db()
+    ident = (request.args.get("ident") or "").strip()
+    card_type = (request.args.get("card_type") or "").strip()
+    cc, cust, rerr = resolve_credit_card(db, ident, card_type=card_type)  # 凭身份+卡种定位唯一卡
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    card_cur = _card_currency(cc)
+    outstanding = max(dec(cc["credit_limit"]) - dec(cc["available_limit"]), D(0))
+    min_rate = get_param_dec(db, C.P_CC_MIN_REPAY_RATE, "0.10")
+    interest_rate = get_param_dec(db, C.P_CC_MIN_INTEREST_RATE, "0.05")
+    min_amount = D(outstanding * min_rate)          # 按期最低额还款应还
+    # 按最低额还款后，剩余本金本月将计的循环利息（供柜员向客户告知）
+    min_interest = D((outstanding - min_amount) * interest_rate) if outstanding > min_amount else D(0)
+
+    # 还款资金来源：人民币卡→人民币储蓄账户；美元卡→美元外汇子户
+    fund_no, fund_bal = None, None
+    if card_cur == "CNY":
+        account_no, _c, aerr = resolve_account_no(db, ident)
+        if not aerr:
+            acc = db.account.find_one({"account_no": account_no})
+            fund_no, fund_bal = account_no, float(dec(acc["balance"]))
+    else:
+        fx, ferr = resolve_fx_account(db, ident, card_cur)
+        if not ferr:
+            fund_no, fund_bal = fx["fx_account_no"], float(dec(fx["balance"]))
+
+    return ok({"credit_card": cc_view(cc, cust), "currency": card_cur,
+               "outstanding": float(outstanding),      # 提前还款(全额结清)应还
+               "min_amount": float(min_amount),        # 按期最低额还款应还
+               "min_interest": float(min_interest),    # 最低额还款后剩余本金本月利息
+               "min_rate": float(min_rate), "interest_rate": float(interest_rate),
+               "fund_account": fund_no, "fund_balance": fund_bal})
+
+
+# ---------- UC-405 第二步：还款（提前/按期/按期最低额；人民币账户还人民币卡，美元账户还美元卡）----------
 @bp.post("/repay")
 @clerk
 def repay():

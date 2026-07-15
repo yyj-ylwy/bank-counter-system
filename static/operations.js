@@ -341,7 +341,20 @@ const OPERATIONS = {
         { n: 'repay_type', label: '还款方式', type: 'select', options: [{ value: 'FULL', label: '提前还款(全额结清)' }, { value: 'SCHEDULED', label: '按期还款(指定金额)' }, { value: 'MIN', label: '按期最低额还款' }] },
         { n: 'amount', label: '还款金额（按期还款填）', type: 'number' },
       ],
-      hint: '人民币卡用人民币储蓄账户还，美元卡用美元外汇子户还；多还部分退回。最低额还款的剩余本金按月利率 5% 计息。',
+      // 第一步：确认卡种 → 试算该卡各还款方式应还金额；第二步：选还款方式确认还款
+      lookup: {
+        byField: 'card_type',
+        btnLabel: '🔍 第一步：确认卡种，查询应还金额',
+        path: '/api/creditcard/repay-quote',
+        query: v => ({ ident: v.ident, card_type: v.card_type }),
+        find: q => q,
+        fill: q => ({ amount: q.outstanding > 0 ? q.outstanding : '' }),  // 按期还款金额默认带出全额，可改
+        okMsg: '已带出该卡应还金额，请选择还款方式后点「确认还款」',
+        show: q => q.outstanding > 0
+          ? `${q.credit_card.card_type} ${q.credit_card.card_no}｜提前还款(全额结清) ${money(q.outstanding)} ${q.currency}｜按期最低额还款 ${money(q.min_amount)} ${q.currency}（剩余本金本月计息约 ${money(q.min_interest)} ${q.currency}）｜还款账户 ${q.fund_account || '（无可用账户）'}${q.fund_balance == null ? '' : '，余额 ' + money(q.fund_balance) + ' ' + q.currency}`
+          : `${q.credit_card.card_type} ${q.credit_card.card_no}｜当前无欠款，无需还款`,
+      },
+      hint: '两步：① 填身份、选卡种后点「查询应还金额」，带出提前还款/按期最低额各应还多少；② 再选还款方式点「确认还款」。人民币卡用人民币储蓄账户还、美元卡用美元外汇子户还；多还部分退回；最低额还款的剩余本金按月利率 5% 计息。',
       result: d => kv({ '卡号': d.credit_card.card_no, '本次还款': money(d.pay) + ' ' + d.currency, '还款来源': d.fund, '循环利息': money(d.interest) + ' ' + d.currency, '剩余欠款': money(d.outstanding) + ' ' + d.currency, '可用额度': money(d.available_limit) + ' ' + d.currency }),
     },
     {

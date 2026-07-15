@@ -214,8 +214,8 @@ function selectOp(op, li) {
   if (li) li.classList.add('active');
   const fieldsHtml = op.fields.map(f => {
     let h = renderField(f);
-    if (op.lookup && f.n === op.lookup.byField)  // 查询回填按钮紧跟在定位字段(如工号)之后
-      h += `<div class="field full"><button type="button" class="btn btn-ghost" id="lookupBtn">🔍 查询并回填</button> <small id="lookupInfo" class="hint"></small></div>`;
+    if (op.lookup && f.n === op.lookup.byField)  // 查询回填按钮紧跟在定位字段(如工号/卡种)之后
+      h += `<div class="field full"><button type="button" class="btn btn-ghost" id="lookupBtn">${esc(op.lookup.btnLabel || '🔍 查询并回填')}</button> <small id="lookupInfo" class="hint"></small></div>`;
     return h;
   }).join('');
   const uploadHtml = op.type === 'upload' ? `<div class="field full"><label>备份文件</label><input type="file" id="f_file" accept=".json"></div>` : '';
@@ -238,25 +238,30 @@ function selectOp(op, li) {
   if (first) first.focus();
 }
 
-// 查询回填：凭定位字段(如工号)先查出当前记录，把其字段值填进表单供修改
+// 查询回填：凭定位字段(如工号/卡种)先查出当前记录，把其字段值填进表单、并把关键信息显示出来。
+// lk.query(vals) 可选：需要按当前表单值带参查询时用（如还款先按 身份+卡种 试算应还金额）。
 async function runLookup(op) {
   const lk = op.lookup;
   const keyField = op.fields.find(f => f.n === lk.byField) || {};
   const key = ($('f_' + lk.byField).value || '').trim();
   if (!key) return banner('err', `请先填写「${keyField.label || lk.byField}」`);
   banner('', '');
-  const { status, data } = await API.call('GET', lk.path, { query: {} });
+  let query = {};
+  if (lk.query) {  // 带参查询：先收集并校验表单里的定位字段（如身份标识）
+    try { query = lk.query(gather(op)); } catch (err) { return banner('err', err.message); }
+  }
+  const { status, data } = await API.call('GET', lk.path, { query });
   if (status === 401) return sessionExpired();
   if (!data.success) return banner('err', data.message || '查询失败');
   const rec = lk.find(data.data, key);
   if (!rec) return banner('err', `未找到「${key}」，请核对`);
-  for (const [name, val] of Object.entries(lk.fill(rec))) {
+  for (const [name, val] of Object.entries(lk.fill ? lk.fill(rec) : {})) {
     const el = $('f_' + name);
     if (el) el.value = (val == null ? '' : String(val));
   }
   const info = $('lookupInfo');
   if (info) info.textContent = lk.show ? lk.show(rec) : '';
-  banner('ok', '已带出当前信息，修改需要变更的项后点保存');
+  banner('ok', lk.okMsg || '已带出当前信息，修改需要变更的项后点保存');
 }
 
 function renderField(f) {
