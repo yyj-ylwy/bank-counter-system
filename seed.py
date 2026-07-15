@@ -40,7 +40,8 @@ INVEST_PRICE_SEED = {
 
 # 系统参数默认值（管理员可在系统管理里修改，无需改代码）
 DEFAULT_PARAMS = [
-    # 外汇牌价不再落种子兜底：一律按需从 Alpha Vantage 实时拉取、缓存 30 分钟（见 forex.refresh_rates）。
+    # 外汇牌价不再落种子兜底：一律按需从 Alpha Vantage 实时拉取，写入全系统共用的汇率记录、
+    # 保质期 1 小时（见 forex.refresh_rates）。
     ("RATE", C.P_LOAN_RATE, "0.0435"),
     ("RATE", C.P_LOAN_OVERDUE_RATE, "0.0005"),
     ("LIMIT", C.P_WITHDRAW_DAILY_LIMIT, "50000"),

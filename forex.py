@@ -45,16 +45,17 @@ def fx_view(fx, cust=None, base=None):
     }
 
 
-# ========== 实时行情：按需拉取，一次取全部币种，缓存 30 分钟 ==========
-# 设计：不再在 system_param 保存“牌价兜底”，牌价一律来自实时行情。
-# 主源 open.er-api.com：一次 HTTP 请求即返回全部币种对 CNY 的汇率（免密钥、无逐币种限流），要么全有要么全无，
-#   避免了 Alpha Vantage “一次要打 9 个请求、免费仅 25 次/天、突发只成功前几个”导致的“只剩美元”问题。
-# 兜底 Alpha Vantage：仅当主源故障/缺某币种时，用其 Key 逐个补齐（通常不触发）。
-# 缓存：任一功能(汇率查询/买卖/挂牌)需要牌价时，若已集齐全部币种且距上次拉取 < 30 分钟则直接用内存缓存、不调 API；
-#   若上次未集齐(主源临时故障)，60 秒即可重试，直至集齐后再进入 30 分钟缓存。UC-302 查单币种也命中同一缓存。
+# ========== 实时行情：按需拉取单币种，全系统共用一份汇率记录，保质期 1 小时 ==========
+# 设计：不在 system_param 保存“牌价兜底”，牌价一律来自实时行情。
+# 主源 Alpha Vantage：只查当前需要的那一个币种（1 次调用），不做批量突发——避免免费额度
+#   （25 次/天）被一次性打光、以及突发只成功前几个导致的“只剩美元”。
+# 兜底 open.er-api.com：AV 失败/限流时用它补齐（免密钥，按日更新的参考价）。
+# 汇率记录 _rate_cache：谁查到就由谁写入，全系统共用一份——外汇模块(UC-306 查询/UC-303 买卖)与
+#   信用卡模块(消费折算/存款合计/提额上限)读写的是同一份。任一模块需要某币种牌价时：
+#   记录存在且写入不足 1 小时 → 直接用记录，不调 API；否则调 API 取新值并覆写记录。
 _ER_API = "https://open.er-api.com/v6/latest/CNY"
-_rate_cache = {}         # currency -> {"mid","buy","sell","as_of","ts"(monotonic)}；按币种独立缓存
-_RATE_TTL = 1800         # 每币种缓存窗口：30 分钟
+_rate_cache = {}         # currency -> {"mid","buy","sell","as_of","ts"(monotonic)}；按币种独立记录
+_RATE_TTL = 3600         # 汇率记录保质期：1 小时（超过则下次需要时重新调 API）
 
 
 def parse_av(text):
@@ -122,7 +123,8 @@ def quote_from_mid(mid, spread):
 
 def refresh_rates(db, currency):
     """取单个币种的实时牌价：Alpha Vantage 实时（1 次调用，不触发批量限流）；失败则 er-api 兜底。
-    按币种缓存 30 分钟。返回 (rate_dict{mid,buy,sell,as_of} 或 None, error 或 None, from_cache_bool)。"""
+    汇率记录全系统共用、保质期 1 小时：记录未过期则直接用、不调 API。
+    返回 (rate_dict{mid,buy,sell,as_of} 或 None, error 或 None, from_cache_bool)。"""
     currency = (currency or "").strip().upper()
     if currency not in C.PARAM_FX:
         return None, "不支持的币种", False
@@ -147,19 +149,9 @@ def refresh_rates(db, currency):
     return rec, None, False
 
 
-def cached_rate(currency):
-    """取「最近一次查询到」的牌价，绝不触发 API 调用；从未查过该币种则返回 None。
-
-    供信用卡等模块折算外币金额用：这些模块不主动更新汇率，一律沿用外汇模块最近一次查到的值；
-    外汇页面(UC-306)刷新汇率后，这里下次折算自动跟着变。不看 TTL —— 过期只影响「要不要重新拉」，
-    而这里本就不拉，因此只要查过就用最近一次的值。
-    """
-    return _rate_cache.get((currency or "").strip().upper())
-
-
 def read_rate(db, currency, direction):
     """取某币种按方向的适用牌价：BUY=客户买入外币(用卖出价) / SELL=客户卖出外币(用买入价)。
-    返回 (rate, rate_type) 或 (None, None)。牌价来自 30 分钟实时缓存。"""
+    返回 (rate, rate_type) 或 (None, None)。牌价来自全系统共用的汇率记录（保质期 1 小时）。"""
     if currency not in C.PARAM_FX:
         return None, None
     r, _err, _c = refresh_rates(db, currency)  # 单币种向 AV 实时拉取
@@ -188,7 +180,7 @@ def live_rate():
                           "sell": float(r["sell"]), "as_of": r["as_of"]}],
                "from_cache": cached, "cache_ttl_min": _RATE_TTL // 60,
                "av_err": r.get("av_err"),  # 诊断：AV 失败原因（为空表示走了 AV 实时）
-               "note": "买入价=银行买入(客户卖出)、卖出价=银行卖出(客户买入)；来自 Alpha Vantage 实时行情，按币种缓存 30 分钟。外汇买卖即按此牌价换算。"})
+               "note": "买入价=银行买入(客户卖出)、卖出价=银行卖出(客户买入)；来自 Alpha Vantage 实时行情。查到的汇率写入全系统共用的记录，1 小时内外汇/信用卡再用同币种直接取记录、不再调 API。外汇买卖与信用卡外币折算均按此牌价换算。"})
 
 
 # ---------- UC-301 外汇子户开立 ----------

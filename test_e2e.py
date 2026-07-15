@@ -385,28 +385,34 @@ def t_creditcard():
     q0 = api("GET", "/api/creditcard/repay-quote", CCK, query={"ident": cid, "card_type": "银联白金卡"})
     ok("405 结清后试算应还=0 [边界]", OK(q0) and q0["data"]["outstanding"] == 0.0 and q0["data"]["min_amount"] == 0.0 and q0["data"]["min_interest"] == 0.0)
 
-    # ---------- 外币折算：只用「最近一次查询到」的汇率，本模块不主动调 API ----------
-    # 直接操作 forex 的汇率缓存，使该分支离线可测且结果确定（真实场景由外汇模块 UC-306 查询写入）
+    # ---------- 外币折算：外汇/信用卡共用同一份汇率记录，保质期 1 小时 ----------
+    # 直接注入 forex 汇率记录，使该分支离线可测且结果确定（真实场景由任一模块首次查询时写入）
     import time as _time
     from common import D6 as _D6
-    from forex import _rate_cache
+    from forex import _rate_cache, _RATE_TTL
     _saved = dict(_rate_cache)
-    _rate_cache.clear()
-    ok("404 未查过汇率的外币消费→E-RATE(不主动调API) [规则]", E(api("POST", "/api/creditcard/consume", CCK, json={
-        "ident": cid, "card_type": "银联白金卡", "currency": "EUR", "amount": "10"})) == "E-RATE")
-    # 模拟外汇页面查过 EUR=7.75：信用卡按该汇率折算
+    ok("FX 汇率记录保质期=1小时 [规则]", _RATE_TTL == 3600)
     _rate_cache["EUR"] = {"mid": _D6("7.75"), "buy": _D6("7.72"), "sell": _D6("7.78"),
                           "as_of": "test", "ts": _time.monotonic()}
     reur = api("POST", "/api/creditcard/consume", CCK, json={
         "ident": cid, "card_type": "银联白金卡", "currency": "EUR", "amount": "100"})
-    ok("404 外币消费按最近一次查询汇率折算(100EUR×7.75=775) [规则]", OK(reur) and abs(reur["data"]["card_amount"] - 775.0) < 0.01)
+    ok("404 外币消费按共用汇率记录折算(100EUR×7.75=775) [规则]", OK(reur) and abs(reur["data"]["card_amount"] - 775.0) < 0.01)
     ok("404 银联外币交易费1%(=7.75) [金额]", OK(reur) and abs(reur["data"]["fee"] - 7.75) < 0.01)
     ok("404 银联白金外币消费返现2.4%(=18.6) [金额]", OK(reur) and abs(reur["data"]["reward"]["cashback"] - 18.6) < 0.01)
-    # 外汇页面刷新汇率后，信用卡折算金额随之改变（同样不调 API）
+    # 同一份记录跨模块共用：外汇模块查同币种直接命中记录、不调 API
+    lr = api("GET", "/api/forex/live-rate", FX, query={"currency": "EUR"})
+    ok("FX 外汇模块命中信用卡写入的同一份记录(不调API) [规则]", OK(lr) and lr["data"]["from_cache"] is True
+       and abs(lr["data"]["rates"][0]["mid"] - 7.75) < 0.01 and lr["data"]["cache_ttl_min"] == 60)
+    # 记录写入 59 分钟(<1小时)仍在保质期内：继续复用、不调 API
+    _rate_cache["EUR"]["ts"] = _time.monotonic() - 3540
     _rate_cache["EUR"]["mid"] = _D6("8.00")
     reur2 = api("POST", "/api/creditcard/consume", CCK, json={
         "ident": cid, "card_type": "银联白金卡", "currency": "EUR", "amount": "100"})
-    ok("404 外汇页刷新汇率后折算跟着变(100EUR×8.00=800) [规则]", OK(reur2) and abs(reur2["data"]["card_amount"] - 800.0) < 0.01)
+    ok("404 记录59分钟未过期仍复用(100EUR×8.00=800) [边界]", OK(reur2) and abs(reur2["data"]["card_amount"] - 800.0) < 0.01)
+    # 记录超 1 小时 → 需要时重新调 API 取新值（依赖外网行情源；AV 限流时 er-api 兜底，仍应 from_cache=False）
+    _rate_cache["EUR"]["ts"] = _time.monotonic() - 3700
+    lr2 = api("GET", "/api/forex/live-rate", FX, query={"currency": "EUR"})
+    ok("FX 记录超1小时→重新调API取新值 [边界]", OK(lr2) and lr2["data"]["from_cache"] is False)
     api("POST", "/api/creditcard/repay", CCK, json={"ident": cid, "card_type": "银联白金卡", "repay_type": "FULL"})  # 结清，不影响后续断言
     _rate_cache.clear()
     _rate_cache.update(_saved)
