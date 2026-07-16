@@ -174,6 +174,8 @@ class ReversalService:
         src = db.account.find_one({"_id": t["account_id"]}, session=session)
         if not src:
             return None, ("E-REV", "原交易账户不存在")
+        if src["status"] == C.ACCOUNT_CLOSED:  # 冲正涉及向原账户退回资金，已销户不可再入账
+            return None, ("E-REV", "原交易账户已销户，请走人工调账流程")
         src_book = SavingsAccount(db, src, session)
         amount = dec(t["amount"])
         legs = [t]  # 待冲腿：主腿 + 转账的关联腿
@@ -185,9 +187,10 @@ class ReversalService:
         elif t["business_type"] == C.TXN_WITHDRAW:
             src_book.credit(amount)  # 取款冲正 = 退回
         else:  # TRANSFER_OUT：区分行内（有转入腿）与跨行（只有手续费腿）
+            # 转入/手续费腿在写入时即带 related_id=转出腿 _id，按此发现比依赖回填的 out.related_id 更稳
+            # （单机降级模式下回填与插入非原子，崩溃可能留下未回填的转出腿）
             t_in = db.business_transaction.find_one(
-                {"_id": t.get("related_id"), "business_type": C.TXN_TRANSFER_IN},
-                session=session) if t.get("related_id") else None
+                {"related_id": t["_id"], "business_type": C.TXN_TRANSFER_IN}, session=session)
             t_fee = db.business_transaction.find_one(
                 {"related_id": t["_id"], "business_type": C.TXN_TRANSFER_FEE}, session=session)
             if t_in:  # 行内：先从收款方扣回（对方已花掉则冲正失败），再退回转出方

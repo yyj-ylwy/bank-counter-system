@@ -455,6 +455,13 @@ def close_account():
         return fail("E-5", f"账户仍有余额 {dec(acc['balance'])}，请先取款或转账清零")
 
     def txn(s):
+        # 先复查后写（with_transaction 对"正常返回错误元组"仍会提交，写必须放在全部校验之后）
+        if db.loan.count_documents({"customer_id": cust["_id"],
+                "status": {"$in": [C.LOAN_PENDING, C.LOAN_APPROVED, C.LOAN_ACTIVE, C.LOAN_OVERDUE]}}, session=s):
+            return ("E-2", "该客户存在未结清贷款，请先结清后再销户")
+        if db.fx_account.count_documents({"customer_id": cust["_id"],
+                "status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}}, session=s):
+            return ("E-3", "该客户存在未关闭的外汇子户，请先关闭")
         # 销户 CAS：状态正常 + 余额为 0 同时命中才置销户，天然防"并发窗口内又入了一笔钱"
         res = db.account.update_one(
             {"_id": acc["_id"], "status": C.ACCOUNT_NORMAL, "balance": m(0)},
@@ -464,12 +471,6 @@ def close_account():
             if a["status"] != C.ACCOUNT_NORMAL:
                 return ("E-4", f"账户当前为「{C.ACCOUNT_STATUS_LABEL.get(a['status'])}」，不可销户")
             return ("E-5", f"账户仍有余额 {dec(a['balance'])}，请先取款或转账清零")
-        if db.loan.count_documents({"customer_id": cust["_id"],
-                "status": {"$in": [C.LOAN_PENDING, C.LOAN_APPROVED, C.LOAN_ACTIVE, C.LOAN_OVERDUE]}}, session=s):
-            return ("E-2", "该客户存在未结清贷款，请先结清后再销户")  # 事务内复查，整体回滚保护
-        if db.fx_account.count_documents({"customer_id": cust["_id"],
-                "status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}}, session=s):
-            return ("E-3", "该客户存在未关闭的外汇子户，请先关闭")
         write_txn(db, business_type=C.TXN_CLOSE_ACCOUNT, amount=0, user_id=g.user["_id"],
                   customer_id=cust["_id"], account_id=acc["_id"], session=s)
         write_audit(db, user_id=g.user["_id"], action=C.TXN_CLOSE_ACCOUNT, object_type="account",

@@ -235,11 +235,14 @@ def disburse():
         SavingsAccount(db, acc, s).credit(amount)
         # 生成还款计划：起算日取放款日零点，各期到期日为日历日，比较无时分秒歧义
         start = now().replace(hour=0, minute=0, second=0, microsecond=0)
-        schedule = build_schedule(loan["repay_method"], amount,
+        method = loan.get("repay_method")
+        if method not in STRATEGIES:  # 历史数据兜底：旧版审批可能存过已下线的还款方式（如"先息后本"）
+            method = "一次性还本付息"
+        schedule = build_schedule(method, amount,
                                   dec(loan["interest_rate"]), loan["term_months"], start)
         db.loan.update_one({"_id": loan["_id"]},
                            {"$set": {"status": C.LOAN_ACTIVE, "balance": m(amount),
-                                     "schedule": sched_to_db(schedule),
+                                     "schedule": sched_to_db(schedule), "repay_method": method,
                                      "due_date": schedule[-1]["due_date"],  # 整笔到期日=末期到期日
                                      "disbursed_at": now(), "disbursed_by": g.user["_id"],
                                      "disbursed_by_no": g.user.get("employee_no"),
@@ -278,6 +281,12 @@ def repay():
         return fail("E-AMT", "还款金额必须大于零", 400)
 
     db = get_db()
+    if request_id:  # 幂等预检：若上次还款已结清贷款，重放须返回原结果而非"已结清"报错
+        dup0 = IdempotencyGuard.find_existing(db, request_id, C.TXN_LOAN_REPAY)
+        if dup0:
+            ln0 = db.loan.find_one({"_id": dup0.get("related_id")})
+            return ok({"loan": loan_view(db, ln0) if ln0 else None,
+                       "txn": txn_view(dup0), "duplicate": True}, "重复请求，返回原交易结果")
     ln, cust, rerr = resolve_loan(db, ident, statuses=[C.LOAN_ACTIVE, C.LOAN_OVERDUE])
     if rerr:
         return fail(rerr[0], rerr[1])

@@ -249,6 +249,12 @@ def t_savings():
     db.business_transaction.update_one({"txn_no": odep["data"]["txn"]["txn_no"]},
                                        {"$set": {"txn_time": now() - timedelta(days=1)}})
     ok("109 隔日流水→E-REV [边界]", E(api("POST", "/api/savings/reverse", S, json={"txn_no": odep["data"]["txn"]["txn_no"], "reason": "隔日"})) == "E-REV")
+    # 已销户账户不可再退回资金
+    cls = open_acct(bal="0")
+    cdep = api("POST", "/api/savings/deposit", S, json={"ident": cls["account_no"], "amount": "100"})
+    cwd = api("POST", "/api/savings/withdraw", S, json={"ident": cls["account_no"], "amount": "100"})
+    api("POST", "/api/savings/close-account", S, json={"ident": cls["account_no"]})
+    ok("109 销户后冲正→E-REV [组合]", E(api("POST", "/api/savings/reverse", S, json={"txn_no": cwd["data"]["txn"]["txn_no"], "reason": "误取"})) == "E-REV")
 
 
 # ==================== 贷款 UC-201 ~ 206 ====================
@@ -321,9 +327,12 @@ def t_loan():
     r2 = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1000", "request_id": rq})
     ok("204 幂等重放返回原流水 [规则]", OK(r2) and r2["data"].get("duplicate") is True)
     ok("204 幂等重放贷款余额不变 [金额]", abs(r2["data"]["loan"]["balance"] - r1["data"]["loan"]["balance"]) < 0.01)
-    rs = api("POST", "/api/loan/repay", L, json={"ident": bid, "mode": "SETTLE"})
+    rq_settle = f"rq-settle-{uid()}"
+    rs = api("POST", "/api/loan/repay", L, json={"ident": bid, "mode": "SETTLE", "request_id": rq_settle})
     ok("204 提前结清成功→PAID_OFF [正常流]", OK(rs) and rs["data"]["loan"]["status"] == C.LOAN_PAID_OFF)
     ok("204 结清减免未到期利息 [规则]", sum(i["waived_interest"] for i in rs["data"]["loan"]["schedule"]) > 0)
+    rs2 = api("POST", "/api/loan/repay", L, json={"ident": bid, "mode": "SETTLE", "request_id": rq_settle})
+    ok("204 结清后幂等重放仍返回原结果(非已结清报错) [规则]", OK(rs2) and rs2["data"].get("duplicate") is True)
     ok("204 已结清再还→E-NOLOAN [判定]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1"})) == "E-NOLOAN")
 
     # 跨客户账户被拒（critical 修复）：apply 用他人 ident 无正常账户时 → E-NOCUST/E-NOACC
