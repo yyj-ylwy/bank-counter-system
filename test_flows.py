@@ -111,71 +111,110 @@ RESULTS.append({"flow": "基础", "step": "PAGE-02", "desc": "前端operations.j
 print(f"  首页: {'✅' if page_ok else '❌'}  JS: {'✅' if js_ok else '❌'}")
 
 # ====== 流程一：新客户全生命周期 ======
+# 注意：step() 只有收到 action 才会真正调 API 并把真实响应交给 validator；
+# 早期版本 action=None + 在外面调 api() 的写法让 validator 拿到的是桩数据，判定是假的，已修正。
 print("\n🔄 流程一：王五从开户到尝试销户 (储蓄)")
 
 t_s = login("S001", "123456")[0]
 step("F1-01", "F1", "储蓄员登录", None, check_success(), token=t_s)
 
-# F1-02: 开户
-s, r = api("POST", "/api/savings/open-account", token=t_s, body={
-    "name": "王五", "id_type": "身份证", "id_no": "110101198505056789",
-    "email": "wangwu@test.com", "phone": "13900000003", "initial_balance": 1000
-})
-ww_ok = r.get("success", False)
-ww_account = r.get("data", {}).get("account", {}).get("account_no", "") if ww_ok else ""
-ww_customer_no = r.get("data", {}).get("customer", {}).get("customer_no", "") if ww_ok else ""
-step("F1-02", "F1", f"王五开户(账号={ww_account})", None,
-     check_success(), token=t_s)
+# F1-02: 开户（线上库重复跑时王五已存在→E-1 属预期，转为查询取账号继续后续步骤）
+_, r = step("F1-02", "F1", "王五开户(重复跑允许E-1复用)",
+     {"method": "POST", "path": "/api/savings/open-account",
+      "body": {"name": "王五", "id_type": "身份证", "id_no": "110101198505056789",
+               "email": "wangwu@test.com", "phone": "13900000003", "initial_balance": 1000}},
+     lambda s,r,h: (bool(h) and (r.get("success") or r.get("error") == "E-1"),
+                    "新开户成功" if r.get("success") else f"已有账户复用: {r.get('message','')[:40]}"),
+     token=t_s)
+ww_account = r.get("data", {}).get("account", {}).get("account_no", "") if r.get("success") else ""
+if not ww_account:  # 已存在：按证件号查回账号
+    s, rq = api("GET", "/api/savings/query?ident=110101198505056789", token=t_s)
+    ww_account = rq.get("data", {}).get("account", {}).get("account_no", "")
 time.sleep(2)
 
 # F1-03: 用证件号存款
-step("F1-03", "F1", "用证件号存款5000", None,
+step("F1-03", "F1", "用证件号存款5000",
+     {"method": "POST", "path": "/api/savings/deposit",
+      "body": {"ident": "110101198505056789", "amount": 5000}},
      lambda s,r,h: (r.get("success", False) and r.get("data",{}).get("balance",0) >= 6000,
                     f"余额={r.get('data',{}).get('balance')}"),
      token=t_s)
-api("POST", "/api/savings/deposit", token=t_s, body={"ident": "110101198505056789", "amount": 5000})
 time.sleep(2)
 
 # F1-04: 用邮箱存款
-s, r = api("POST", "/api/savings/deposit", token=t_s, body={"ident": "wangwu@test.com", "amount": 2000})
-step("F1-04", "F1", "用邮箱存款2000", None,
+step("F1-04", "F1", "用邮箱存款2000",
+     {"method": "POST", "path": "/api/savings/deposit",
+      "body": {"ident": "wangwu@test.com", "amount": 2000}},
      lambda s,r,h: (r.get("success", False) and r.get("data",{}).get("balance",0) >= 7000,
                     f"余额={r.get('data',{}).get('balance')}"),
      token=t_s)
 time.sleep(2)
 
 # F1-05: 用手机号取款
-s, r = api("POST", "/api/savings/withdraw", token=t_s, body={"ident": "13900000003", "amount": 1000})
-step("F1-05", "F1", "用手机号取款1000", None,
+step("F1-05", "F1", "用手机号取款1000",
+     {"method": "POST", "path": "/api/savings/withdraw",
+      "body": {"ident": "13900000003", "amount": 1000}},
      lambda s,r,h: (r.get("success", False) and r.get("data",{}).get("balance",0) >= 6000,
                     f"余额={r.get('data',{}).get('balance')}"),
      token=t_s)
 time.sleep(2)
 
 # F1-06: 用账号查询
-s, r = api("GET", f"/api/savings/query?ident={ww_account}", token=t_s)
-step("F1-06", "F1", f"用账号{ww_account}查询", None,
+step("F1-06", "F1", f"用账号{ww_account}查询",
+     {"method": "GET", "path": f"/api/savings/query?ident={ww_account}"},
      lambda s,r,h: (r.get("success", False) and "王五" in json.dumps(r, ensure_ascii=False),
                     "查到王五" if r.get("success") else r.get("message","")),
      token=t_s)
 
 # F1-07: 挂失
-s, r = api("POST", "/api/savings/card", token=t_s, body={"ident": "wangwu@test.com", "op": "LOSS"})
-step("F1-07", "F1", "用邮箱挂失卡片", None, check_success(), token=t_s)
+step("F1-07", "F1", "用邮箱挂失卡片",
+     {"method": "POST", "path": "/api/savings/card",
+      "body": {"ident": "wangwu@test.com", "op": "LOSS"}},
+     check_success(), token=t_s)
 time.sleep(2)
+
+# F1-07b: 挂失只进不出——存款放行、取款拦截
+step("F1-07b", "F1", "挂失卡存款放行(只进不出)",
+     {"method": "POST", "path": "/api/savings/deposit",
+      "body": {"ident": "wangwu@test.com", "amount": 100}},
+     check_success(), token=t_s)
+step("F1-07c", "F1", "挂失卡取款拦截E-LOST",
+     {"method": "POST", "path": "/api/savings/withdraw",
+      "body": {"ident": "wangwu@test.com", "amount": 100}},
+     lambda s,r,h: (r.get("error") == "E-LOST", f"错误码={r.get('error')}"),
+     token=t_s)
 
 # F1-08: 解挂 + 更新信息
-api("POST", "/api/savings/card", token=t_s, body={"ident": "13900000003", "op": "UNLOSS"})
+step("F1-08a", "F1", "手机号解挂",
+     {"method": "POST", "path": "/api/savings/card",
+      "body": {"ident": "13900000003", "op": "UNLOSS"}},
+     check_success(), token=t_s)
 time.sleep(2)
-s, r = api("POST", "/api/savings/update-customer", token=t_s,
-           body={"ident": "110101198505056789", "address": "北京市朝阳区", "occupation": "工程师"})
-step("F1-08", "F1", "解挂+更新地址职业", None, check_success(), token=t_s)
+step("F1-08", "F1", "更新地址职业",
+     {"method": "POST", "path": "/api/savings/update-customer",
+      "body": {"ident": "110101198505056789", "address": "北京市朝阳区", "occupation": "工程师"}},
+     check_success(), token=t_s)
 time.sleep(2)
 
+# F1-08c: 当日冲正——存一笔→冲正→余额复原
+_, rdep = step("F1-08b", "F1", "存款88(待冲正)",
+     {"method": "POST", "path": "/api/savings/deposit",
+      "body": {"ident": "110101198505056789", "amount": 88}},
+     check_success(), token=t_s)
+_dep_txn = rdep.get("data", {}).get("txn", {}).get("txn_no", "")
+_bal_before = (rdep.get("data", {}).get("balance") or 0) - 88
+step("F1-08c", "F1", "当日冲正(存款扣回)",
+     {"method": "POST", "path": "/api/savings/reverse",
+      "body": {"txn_no": _dep_txn, "reason": "流程测试冲正"}},
+     lambda s,r,h: (r.get("success", False) and abs((r.get("data",{}).get("balance") or -1) - _bal_before) < 0.01,
+                    f"冲正后余额={r.get('data',{}).get('balance')} (应={_bal_before})"),
+     token=t_s)
+
 # F1-09: 尝试销户（有余额应失败）
-s, r = api("POST", "/api/savings/close-account", token=t_s, body={"ident": "110101198505056789"})
-step("F1-09", "F1", "尝试销户(有余额应失败)", None,
-     lambda s,r,h: (r.get("success") == False and "E-5" in r.get("error",""),
+step("F1-09", "F1", "尝试销户(有余额应失败)",
+     {"method": "POST", "path": "/api/savings/close-account",
+      "body": {"ident": "110101198505056789"}},
+     lambda s,r,h: (r.get("success") == False and "E-5" in (r.get("error") or ""),
                     f"正确拒绝: {r.get('message','')}"),
      token=t_s)
 
@@ -185,65 +224,90 @@ print("\n🔄 流程二：张三贷款全流程")
 t_l = login("L001", "123456")[0]
 step("F2-01", "F2", "贷款员登录", None, check_success(), token=t_l)
 
+# 审贷分离：申请(L001)/审批(L002)/放款(L001) 须不同工号。幂等创建 L002（已存在返回 E-1 忽略）
+t_adm = login("admin", "admin123")[0]
+api("POST", "/api/admin/users", token=t_adm,
+    body={"employee_no": "L002", "name": "贷款复核员", "role": "LOAN_CLERK", "password": "123456"})
+t_l2 = login("L002", "123456")[0]
+
 time.sleep(2)
-s, r = api("POST", "/api/loan/apply", token=t_l, body={
-    "ident": "110101199001011234", "loan_type": "个人消费贷",
-    "amount": 30000, "term_months": 6, "purpose": "装修", "guarantee": "信用"
-})
-ln_contract = r.get("data", {}).get("loan", {}).get("contract_no", "") if r.get("success") else ""
-step("F2-02", "F2", f"张三贷款申请(合同={ln_contract})", None,
+_, r = step("F2-02", "F2", "张三贷款申请",
+     {"method": "POST", "path": "/api/loan/apply",
+      "body": {"ident": "110101199001011234", "loan_type": "个人消费贷",
+               "amount": 30000, "term_months": 6, "purpose": "装修", "guarantee": "信用"}},
      lambda s,r,h: (r.get("success", False) and "PENDING" in json.dumps(r, ensure_ascii=False),
-                    f"合同号={ln_contract}"),
+                    f"合同号={r.get('data',{}).get('loan',{}).get('contract_no','')}"),
      token=t_l)
+ln_contract = r.get("data", {}).get("loan", {}).get("contract_no", "") if r.get("success") else ""
 time.sleep(2)
 
 if ln_contract:
-    s, r = api("POST", "/api/loan/approve", token=t_l, body={
-        "contract_no": ln_contract, "decision": "APPROVED",
-        "approved_amount": 30000, "interest_rate": 0.045, "term_months": 6})
-    step("F2-03", "F2", "审批通过", None,
+    # F2-03a: 审贷分离负例——申请经办人 L001 自审应被拦截
+    step("F2-03a", "F2", "经办人自审被拦截E-SOD(审贷分离)",
+         {"method": "POST", "path": "/api/loan/approve",
+          "body": {"contract_no": ln_contract, "decision": "APPROVED"}},
+         lambda s,r,h: (r.get("error") == "E-SOD", f"错误码={r.get('error')}"),
+         token=t_l)
+    step("F2-03", "F2", "审批通过(L002复核·审贷分离)",
+         {"method": "POST", "path": "/api/loan/approve",
+          "body": {"contract_no": ln_contract, "decision": "APPROVED",
+                   "approved_amount": 30000, "interest_rate": 0.045,
+                   "term_months": 6, "repay_method": "等额本息"}},
          lambda s,r,h: (r.get("success", False) and "APPROVED" in json.dumps(r, ensure_ascii=False),
                         r.get("message","")),
+         token=t_l2)
+    time.sleep(2)
+
+    # F2-04a: 审贷分离负例——审批人 L002 放款应被拦截
+    step("F2-04a", "F2", "审批人自放被拦截E-SOD(审贷分离)",
+         {"method": "POST", "path": "/api/loan/disburse", "body": {"contract_no": ln_contract}},
+         lambda s,r,h: (r.get("error") == "E-SOD", f"错误码={r.get('error')}"),
+         token=t_l2)
+    step("F2-04", "F2", "放款(生成6期等额本息计划)",
+         {"method": "POST", "path": "/api/loan/disburse", "body": {"contract_no": ln_contract}},
+         lambda s,r,h: (r.get("success", False)
+                        and len(r.get("data",{}).get("loan",{}).get("schedule") or []) == 6,
+                        f"期数={len(r.get('data',{}).get('loan',{}).get('schedule') or [])}"
+                        if r.get("success") else r.get("message","")),
          token=t_l)
     time.sleep(2)
 
-    s, r = api("POST", "/api/loan/disburse", token=t_l, body={"contract_no": ln_contract})
-    step("F2-04", "F2", "放款(张三余额应+30000)", None,
-         lambda s,r,h: (r.get("success", False),
-                        f"放款成功" if r.get("success") else r.get("message","")),
-         token=t_l)
-    time.sleep(2)
-
-# F2-05: 用手机号还款
-s, r = api("POST", "/api/loan/repay", token=t_l,
-           body={"ident": "13800000001", "amount": 5000})
-step("F2-05", "F2", "用手机号还款5000", None, check_success(), token=t_l)
+# F2-05: 还款（用合同号定位——线上库张三可能有历史遗留贷款，客户级身份会命中多笔）
+step("F2-05", "F2", "凭合同号还款5000",
+     {"method": "POST", "path": "/api/loan/repay",
+      "body": {"ident": ln_contract or "13800000001", "amount": 5000}},
+     check_success(), token=t_l)
 time.sleep(2)
 
-# F2-06: 用证件号再还款
-s, r = api("POST", "/api/loan/repay", token=t_l,
-           body={"ident": "110101199001011234", "amount": 5000})
-step("F2-06", "F2", "用证件号再还款5000", None, check_success(), token=t_l)
+# F2-06: 再还款并验证还款计划瀑布（返回含 schedule/剩余本金）
+step("F2-06", "F2", "再还款5000(瀑布冲抵含计划表)",
+     {"method": "POST", "path": "/api/loan/repay",
+      "body": {"ident": ln_contract or "110101199001011234", "amount": 5000}},
+     lambda s,r,h: (r.get("success", False) and bool(r.get("data",{}).get("loan",{}).get("schedule")),
+                    f"剩余本金={r.get('data',{}).get('loan',{}).get('balance')}"),
+     token=t_l)
 time.sleep(2)
 
 # F2-07: 逾期查询
-s, r = api("GET", "/api/loan/overdue?ident=110101199001011234", token=t_l)
-step("F2-07", "F2", "逾期查询(张三)", None, check_success(), token=t_l)
+step("F2-07", "F2", "逾期查询(张三)",
+     {"method": "GET", "path": "/api/loan/overdue?ident=110101199001011234"},
+     check_success(), token=t_l)
 
 # F2-08: 审批拒绝
-s, r2 = api("POST", "/api/loan/apply", token=t_l, body={
-    "ident": "110101199203054321", "loan_type": "汽车贷款",
-    "amount": 200000, "term_months": 24, "purpose": "购车", "guarantee": "抵押"
-})
+_, r2 = step("F2-08a", "F2", "李四申请汽车贷款",
+     {"method": "POST", "path": "/api/loan/apply",
+      "body": {"ident": "110101199203054321", "loan_type": "汽车贷款",
+               "amount": 200000, "term_months": 24, "purpose": "购车", "guarantee": "抵押"}},
+     check_success(), token=t_l)
 rej_cn = r2.get("data", {}).get("loan", {}).get("contract_no", "") if r2.get("success") else ""
 if rej_cn:
     time.sleep(2)
-    s, r = api("POST", "/api/loan/approve", token=t_l,
-               body={"contract_no": rej_cn, "decision": "REJECTED", "reason": "资料不全"})
-    step("F2-08", "F2", "审批拒绝", None,
+    step("F2-08", "F2", "审批拒绝(L002复核)",
+         {"method": "POST", "path": "/api/loan/approve",
+          "body": {"contract_no": rej_cn, "decision": "REJECTED", "reason": "资料不全"}},
          lambda s,r,h: (r.get("success", False) and "REJECTED" in json.dumps(r, ensure_ascii=False),
                         r.get("message","")),
-         token=t_l)
+         token=t_l2)
 
 # ====== 流程三：外汇全流程 ======
 print("\n🔄 流程三：李四外汇买卖全流程")
