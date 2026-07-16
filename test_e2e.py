@@ -1,18 +1,27 @@
 """端到端「条件/判定/组合覆盖」测试（软件工程课设测试交付物）。
 
-覆盖 34 个接口的判定分支、边界值与条件组合，对照覆盖用例表逐条断言。
+覆盖全项目 52 个接口中的 44 个（储蓄/贷款/外汇/信用卡/管理/认证全覆盖；未覆盖的 8 个为
+投资理财模块，其决策逻辑另由 test_extra.py 以因果图-判定表法覆盖），逐条断言判定分支、
+边界值与条件组合。
 覆盖类型标注：[判定] 每个判定真假两分支；[条件] 复合条件的单条件取值；
-             [组合] 多条件组合；[边界] 边界值；[正常流] 成功路径。
+             [组合] 多条件组合；[边界] 边界值；[正常流] 成功路径；
+             [规则] 业务规则；[金额] 金额口径；[迁移] 启动迁移；[一致性] 前后端口径一致。
 
-已同步同学重构后的 API：储蓄/贷款/外汇/信用卡各资金与查询接口统一改用身份标识 ident
-（证件号/邮箱/手机号/账号/卡号任填其一），外汇买卖/变更改用 ident + currency 定位子户，
-不再显式传 account_no/from_account_no/fx_account_no。错误码亦按各源码实际返回核对。
+API 现状（已随重构同步）：
+- 各资金与查询接口统一用身份标识 ident（证件号/邮箱/手机号/账号/卡号任填其一）定位，
+  不再显式传 account_no/from_account_no/fx_account_no。
+- 外汇买卖/变更用 ident + currency 定位子户。
+- 信用卡「每人每种卡最多一张」，故审批/提额/消费/还款/消费记录/卡片操作一律用
+  ident + card_type 定位唯一卡，无需卡号。信用卡账单与预借现金功能已在重做时移除。
 
-运行前提：项目根目录有 .env（含 MONGODB_URI）且能连通 MongoDB。
-外汇买卖用例依赖实时牌价（Alpha Vantage/er-api），需可访问外网行情源。
+运行前提：能连通 MongoDB（本地单机 mongod 会自动降级为无事务，见 db.py，不影响断言）。
+外汇实时牌价用例依赖外网行情源（Alpha Vantage 实时，失败回落 er-api 参考价）；牌价写入
+全系统共用的汇率记录、保质期 1 小时，外汇与信用卡共用同一份，故信用卡外币折算用例直接
+注入该记录以保证离线可测且结果确定。
 运行：    python test_e2e.py
 使用一次性库 bank_counter_e2etest，测完自动删除，不影响生产库 bank_counter。
-少数「事务内重读/并发」分支（如并发关闭、账单被并发还清）单线程不可复现，已在注释标注跳过。
+少数「事务内重读/并发」分支（如外汇子户并发注销、信用卡欠款被并发还清）单线程不可复现，
+已在注释标注跳过。
 """
 import os
 os.environ.setdefault("DB_NAME", "bank_counter_e2etest")
@@ -282,14 +291,15 @@ def t_forex():
     fxno = r["data"]["fx_account"]["fx_account_no"]
     ok("301 同币种重复→E-2 [判定]", E(api("POST", "/api/forex/open-subaccount", FX, json={"ident": fid, "currency": "USD"})) == "E-2")
 
-    # UC-306 实时汇率（重构后合并原 UC-302，牌价一律来自实时行情缓存；环境可访问行情源）
+    # UC-306 实时汇率（合并原 UC-302 汇率确认与 UC-307 挂牌；牌价来自实时行情，写入全系统共用的
+    # 汇率记录、保质期 1 小时；买卖价由中间价 ±FX_SPREAD 推算，不单独调 API。需可访问行情源）
     ok("306 缺币种→E-CUR [判定]", E(api("GET", "/api/forex/live-rate", FX, query={})) == "E-CUR")
     ok("306 币种非法→E-CUR [判定]", E(api("GET", "/api/forex/live-rate", FX, query={"currency": "XXX"})) == "E-CUR")
     ok("306 正常查询成功 [正常流]", OK(api("GET", "/api/forex/live-rate", FX, query={"currency": "USD"})))
     r306b = api("GET", "/api/forex/live-rate", FX, query={"currency": "USD"})
-    ok("306 命中缓存(from_cache) [边界]", OK(r306b) and r306b["data"]["from_cache"] is True)
+    ok("306 1小时内命中同一份汇率记录(from_cache) [边界]", OK(r306b) and r306b["data"]["from_cache"] is True)
 
-    # UC-303 买卖（重构为 ident + currency 定位子户，须核验持卡人身份；牌价按实时行情换算）
+    # UC-303 买卖（ident + currency 定位子户；按共用汇率记录换算：客户买入用卖出价、卖出用买入价）
     ok("303 方向非法→E-DIR [判定]", E(api("POST", "/api/forex/trade", FX, json={"ident": fid, "currency": "USD", "direction": "ZZ", "amount": "10"})) == "E-DIR")
     ok("303 金额0→E-AMT [边界]", E(api("POST", "/api/forex/trade", FX, json={"ident": fid, "currency": "USD", "direction": "BUY", "amount": "0"})) == "E-AMT")
     ok("303 该币种无子户→E-NOFX [判定]", E(api("POST", "/api/forex/trade", FX, json={"ident": fid, "currency": "EUR", "direction": "BUY", "amount": "10"})) == "E-NOFX")
