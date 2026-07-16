@@ -303,7 +303,9 @@ function renderField(f) {
     input = `<input type="checkbox" id="${id}" class="cb">`;
   } else {
     const t = f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : f.type === 'password' ? 'password' : 'text';
-    const step = f.type === 'number' ? ' step="0.01"' : '';
+    // step 默认 any：金额精度由后端统一收敛（DECIMAL(18,2)）。写死 step="0.01" 时浏览器原生
+    // 校验会静默拦下 0.0435 这类多位小数（表单提交无任何反应），导致贷款审批的年利率填不进去
+    const step = f.type === 'number' ? ` step="${f.step || 'any'}"` : '';
     const maxlen = (t === 'text' || t === 'password') ? ` maxlength="${f.max || 64}"` : '';
     input = `<input type="${t}" id="${id}"${step}${maxlen} autocomplete="off">`;
   }

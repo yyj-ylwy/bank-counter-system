@@ -8,6 +8,17 @@ from playwright.async_api import async_playwright
 
 URL = "https://bank-counter-system.onrender.com"
 RESULTS = []
+API_LOG = []  # 每个 /api/ 响应的 (状态码, 路径, 响应体前150字)，失败场景直接打印最近两条便于定位
+
+
+def ok(flow, tid, desc, passed, detail=""):
+    m = "✅" if passed else "❌"
+    RESULTS.append({"f": flow, "id": tid, "d": desc, "ok": passed, "detail": str(detail)[:150]})
+    if not passed:
+        print(f"  ❌ {tid}: {desc} → {detail[:100]}")
+        for line in API_LOG[-2:]:
+            print(f"      ↳ API {line}")
+    return passed
 
 
 def ensure_loan_clerk2():
@@ -26,12 +37,6 @@ def ensure_loan_clerk2():
     if tok:
         _api("POST", "/api/admin/users", token=tok,
              body={"employee_no": "L002", "name": "贷款复核员", "role": "LOAN_CLERK", "password": "123456"})
-
-def ok(flow, tid, desc, passed, detail=""):
-    m = "✅" if passed else "❌"
-    RESULTS.append({"f": flow, "id": tid, "d": desc, "ok": passed, "detail": str(detail)[:150]})
-    if not passed: print(f"  ❌ {tid}: {desc} → {detail[:100]}")
-    return passed
 
 def check_text(expected, text):
     if isinstance(expected, list): return all(e in text for e in expected)
@@ -63,25 +68,29 @@ async def login(page, emp, pw):
     await page.wait_for_timeout(3000)
 
 async def click_menu(page, label):
-    """切换到指定菜单项，确保表单渲染完成才返回"""
-    # 先关闭可能残留的弹窗
+    """切换到指定菜单项，确保表单渲染完成才返回。任何异常返回 False（单场景失败不拖垮整个套件）"""
     try:
-        okb = page.locator("[data-act='ok']")
-        if await okb.is_visible(timeout=500): await okb.click()
-        await page.wait_for_timeout(300)
-    except: pass
-    # 等待菜单项就绪
-    await page.wait_for_selector("#menu li", state="visible", timeout=8000)
-    items = await page.locator("#menu li").all()
-    for it in items:
-        text = (await it.text_content() or "").strip()
-        if label in text:
-            await it.click()
-            # 等待表单字段出现（关键：表单渲染需要 JS 执行时间）
-            await page.wait_for_selector("#opform button[type=submit]", state="visible", timeout=8000)
-            await page.wait_for_timeout(1000)
-            return True
-    return False
+        # 先关闭可能残留的弹窗
+        try:
+            okb = page.locator("[data-act='ok']")
+            if await okb.is_visible(timeout=500): await okb.click()
+            await page.wait_for_timeout(300)
+        except: pass
+        # 等待菜单项就绪
+        await page.wait_for_selector("#menu li", state="attached", timeout=8000)
+        items = await page.locator("#menu li").all()
+        for it in items:
+            text = (await it.text_content() or "").strip()
+            if label in text:
+                await it.click()
+                # 等待表单字段出现（关键：表单渲染需要 JS 执行时间）
+                await page.wait_for_selector("#opform button[type=submit]", state="visible", timeout=8000)
+                await page.wait_for_timeout(1000)
+                return True
+        return False
+    except Exception as e:
+        print(f"    ⚠️ click_menu({label}) 失败: {type(e).__name__}")
+        return False
 
 async def fill(page, name, value):
     """填写表单字段。对于 select，用 page.select_option 定位 id"""
@@ -105,19 +114,29 @@ async def fill(page, name, value):
         return False
 
 async def submit(page):
-    """提交表单，处理确认弹窗"""
+    """提交表单，处理确认弹窗；轮询等待结果渲染（Render 响应有秒级抖动，固定 sleep 会读到空 banner）"""
     await page.locator("#content button[type=submit]").click()
     await page.wait_for_timeout(800)
-    # 查找确认弹窗的"确认无误，提交"按钮
-    for _ in range(3):  # 重试3次，处理慢渲染
+    # 确认弹窗（资金类 CONFIRM_OPS 才有）：短等两轮，非弹窗操作不再空耗 15 秒
+    for _ in range(2):
         try:
             okb = page.locator("[data-act='ok']")
-            await okb.wait_for(state="visible", timeout=5000)
+            await okb.wait_for(state="visible", timeout=2500)
             await okb.click()
             break
         except:
-            await page.wait_for_timeout(1000)
-    await page.wait_for_timeout(3000)
+            pass
+    # 等 banner 或 result 出现内容（最长 20s），出现即返回
+    for _ in range(20):
+        try:
+            b = (await page.locator("#banner").text_content() or "").strip()
+            rs = (await page.locator("#result").text_content() or "").strip()
+            if len(b) > 2 or len(rs) > 2:
+                break
+        except:
+            pass
+        await page.wait_for_timeout(1000)
+    await page.wait_for_timeout(500)
 
 async def get_page_text(page):
     """读取页面展示给用户的文字（banner + result + content）"""
@@ -137,6 +156,15 @@ async def run_all():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         page.set_default_timeout(15000)
+
+        async def _cap_api(resp):  # 记录每个 API 响应，失败场景可直查后端实际返回
+            if "/api/" in resp.url:
+                try:
+                    body = (await resp.text())[:150]
+                except Exception:
+                    body = "<读取失败>"
+                API_LOG.append(f"{resp.status} {resp.url.split('.com', 1)[-1]} → {body}")
+        page.on("response", _cap_api)
 
         # === 等待 Render 冷启动 + 首页验证 ===
         print("等待服务就绪...")
