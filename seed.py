@@ -14,12 +14,12 @@ from invest import m4, D4
 
 # 演示账号（README 里公布）。生产环境请让管理员改密码。
 DEMO_USERS = [
-    ("admin", "周志远", C.ROLE_ADMIN, "admin123"),
-    ("S001", "苏文静", C.ROLE_SAVINGS, "123456"),
-    ("L001", "林建华", C.ROLE_LOAN, "123456"),
-    ("F001", "冯雅琴", C.ROLE_FOREX, "123456"),
-    ("CC001", "蔡明轩", C.ROLE_CREDIT, "123456"),
-    ("I001", "尹晓彤", C.ROLE_INVEST, "123456"),
+    ("admin", "系统管理员", C.ROLE_ADMIN, "admin123"),
+    ("S001", "小储", C.ROLE_SAVINGS, "123456"),
+    ("L001", "小贷", C.ROLE_LOAN, "123456"),
+    ("F001", "小汇", C.ROLE_FOREX, "123456"),
+    ("CC001", "小信", C.ROLE_CREDIT, "123456"),
+    ("I001", "小理", C.ROLE_INVEST, "123456"),
 ]
 
 # 演示理财产品：(产品代码=行情代码, 名称, 类型, 计价币种, 风险等级)

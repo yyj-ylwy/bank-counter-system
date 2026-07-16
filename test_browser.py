@@ -36,7 +36,7 @@ def ensure_loan_clerk2():
     tok = r.get("data", {}).get("token")
     if tok:
         _api("POST", "/api/admin/users", token=tok,
-             body={"employee_no": "L002", "name": "卢正阳", "role": "LOAN_CLERK", "password": "123456"})
+             body={"employee_no": "L002", "name": "小审", "role": "LOAN_CLERK", "password": "123456"})
 
 def check_text(expected, text):
     if isinstance(expected, list): return all(e in text for e in expected)

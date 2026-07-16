@@ -66,7 +66,7 @@ def E(r): return r.get("error")
 def OK(r): return r.get("success") is True
 
 # 审贷分离（maker-checker）需要第二名贷款业务员：申请/审批/放款须不同人。幂等创建 L002（已存在返回 E-1 忽略）
-api("POST", "/api/admin/users", AD, json={"employee_no": "L002", "name": "卢正阳",
+api("POST", "/api/admin/users", AD, json={"employee_no": "L002", "name": "小审",
                                           "role": C.ROLE_LOAN, "password": "123456"})
 L2 = login("L002", "123456")
 
