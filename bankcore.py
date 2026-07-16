@@ -148,6 +148,74 @@ class TxnRecorder:
         return t
 
 
+class ReconciliationService:
+    """账实对账：每个储蓄账户 余额 ?= Σ入账流水 − Σ出账流水（README 的"可对账"承诺落地）。
+
+    口径：
+    - 已冲正的原腿（reversed=True）与红字腿（REVERSAL）成对排除——冲正语义即"当无事发生"；
+    - 外汇买卖流水 amount 为外币金额，人民币腿取补充字段 cny_amount；
+    - CC_REPAY 的资金来源可能是储蓄或美元子户，两种分支流水同型同挂储蓄账户，
+      类型级无法判定方向 → 含该类型的账户列入 skipped（不误报差异）；
+    - 方向表未登记且带 account_id 的新类型 → unknown_types 提示登记（不算差异），
+      队友新增业务类型时对账不误报、不漏提示。"""
+
+    CREDIT_TYPES = {C.TXN_OPEN, C.TXN_DEPOSIT, C.TXN_TRANSFER_IN, C.TXN_LOAN_DISBURSE,
+                    C.TXN_CC_CASHBACK, C.TXN_INVEST_SELL, C.TXN_CC_CASH_PAYOUT}
+    DEBIT_TYPES = {C.TXN_WITHDRAW, C.TXN_TRANSFER_OUT, C.TXN_TRANSFER_FEE,
+                   C.TXN_LOAN_REPAY, C.TXN_INVEST_BUY}
+    CNY_FIELD_TYPES = {C.TXN_FX_BUY: -1, C.TXN_FX_SELL: 1}   # 金额取 cny_amount 的类型及方向
+    NEUTRAL_TYPES = {C.TXN_CLOSE_ACCOUNT, TXN_REVERSAL}       # 不影响余额
+    UNVERIFIED_TYPES = {C.TXN_CC_REPAY}                       # 无法按类型判定方向
+
+    @classmethod
+    def run(cls, db):
+        """全量核对，返回报告 dict（不写库；审计由路由层负责）。"""
+        # 一次聚合出各账户各类型的金额合计（排除失败/已冲正/红字流水）
+        rows = db.business_transaction.aggregate([
+            {"$match": {"account_id": {"$ne": None}, "status": C.TXN_STATUS_SUCCESS,
+                        "reversed": {"$ne": True}, "business_type": {"$ne": TXN_REVERSAL}}},
+            {"$group": {"_id": {"acc": "$account_id", "bt": "$business_type"},
+                        "total": {"$sum": "$amount"}, "cny": {"$sum": "$cny_amount"}}},
+        ])
+        expected, skipped_accs, unknown = {}, set(), set()
+        for r in rows:
+            acc_id, bt = r["_id"]["acc"], r["_id"]["bt"]
+            if bt in cls.NEUTRAL_TYPES:
+                continue
+            if bt in cls.UNVERIFIED_TYPES:
+                skipped_accs.add(acc_id)
+                continue
+            if bt in cls.CNY_FIELD_TYPES:
+                delta = dec(r.get("cny") or 0) * cls.CNY_FIELD_TYPES[bt]
+            elif bt in cls.CREDIT_TYPES:
+                delta = dec(r["total"])
+            elif bt in cls.DEBIT_TYPES:
+                delta = -dec(r["total"])
+            else:  # 方向表未登记的新类型：不猜方向，提示登记
+                unknown.add(bt)
+                skipped_accs.add(acc_id)
+                continue
+            expected[acc_id] = expected.get(acc_id, D(0)) + delta
+
+        matched, mismatched, skipped = 0, [], []
+        for acc in db.account.find({}):
+            if acc["_id"] in skipped_accs:
+                skipped.append({"account_no": acc["account_no"],
+                                "reason": "含无法按类型核对的流水（如信用卡多渠道还款）"})
+                continue
+            exp = D(expected.get(acc["_id"], 0))
+            bal = dec(acc["balance"])
+            if abs(bal - exp) < D("0.01"):
+                matched += 1
+            else:
+                mismatched.append({"account_no": acc["account_no"], "balance": float(bal),
+                                   "expected": float(exp), "diff": float(D(bal - exp))})
+        return {"checked": matched + len(mismatched) + len(skipped),
+                "matched": matched, "mismatched": mismatched, "skipped": skipped,
+                "unknown_types": sorted(unknown),
+                "balanced": not mismatched}
+
+
 class ReversalService:
     """UC-109 当日冲正：柜员错账纠正通道。
     规则：仅当日、仅成功、未被冲正过；转账以转出腿为入口，转入/手续费腿一并反向。

@@ -741,10 +741,25 @@ def t_robust():
     ok("无效令牌→401 [安全]", cl.get("/api/me", headers={"Authorization": "Bearer forged.token.xyz"}).status_code == 401)
 
 
+# ==================== 终局不变式：全库账实对账 ====================
+def t_reconcile():
+    """全部用例跑完后执行 UC-110 对账：任何冲正/幂等/原子记账的 bug 都会在这里现形。
+    skipped（信用卡多渠道还款账户）允许存在；mismatched 必须为 0——全库账是平的。"""
+    print("== 终局不变式：账实对账 ==")
+    r = api("GET", "/api/savings/reconcile", S)
+    ok("110 对账接口成功 [正常流]", OK(r))
+    ok("110 全库账实相符(差异=0) [不变式]", OK(r) and r["data"]["mismatched"] == [])
+    ok("110 无未登记方向的流水类型 [规则]", OK(r) and r["data"]["unknown_types"] == [])
+    if OK(r):
+        print(f"   核对 {r['data']['checked']} 户：相符 {r['data']['matched']}，"
+              f"跳过 {len(r['data']['skipped'])}（{r['message']}）")
+
+
 if __name__ == "__main__":
     try:
         t_savings(); t_loan(); t_forex(); t_creditcard(); t_card_benefits_ui()
         t_admin(); t_auth(); t_robust()
+        t_reconcile()  # 终局：全库账实对账（不变式验证）
     finally:
         get_client().drop_database("bank_counter_e2etest")  # 删除一次性库
     print(f"\n==== 结果：{_p} 通过 / {_f} 失败（共 {_p + _f} 条断言）====")

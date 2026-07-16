@@ -18,7 +18,7 @@ from common import (
 )
 from bankcore import (
     AccountGuard, SavingsAccount, DailyDebitPolicy, IdempotencyGuard,
-    TxnRecorder, ReversalService, CREDIT, DEBIT,
+    TxnRecorder, ReversalService, ReconciliationService, CREDIT, DEBIT,
 )
 
 bp = Blueprint("savings", __name__, url_prefix="/api/savings")
@@ -324,6 +324,23 @@ def reverse():
                 object_id=txn_no, result=C.RESULT_SUCCESS,
                 detail={"reason": reason, "legs": res["legs_reversed"]})
     return ok(res, f"冲正成功，共反向 {res['legs_reversed']} 条流水")
+
+
+# ---------- UC-110 账实对账 ----------
+@bp.get("/reconcile")
+@clerk
+def reconcile():
+    """全量账实核对：每个储蓄账户 余额 ?= Σ入账流水 − Σ出账流水（冲正成对排除）。
+    差异为空即"全库账平"——把「余额与流水可对账」的设计承诺变成可执行的检查。"""
+    db = get_db()
+    report = ReconciliationService.run(db)
+    write_audit(db, user_id=g.user["_id"], action="RECONCILE", object_type="account",
+                object_id="-", result=C.RESULT_SUCCESS,
+                detail={"checked": report["checked"], "mismatched": len(report["mismatched"]),
+                        "skipped": len(report["skipped"])})
+    msg = "对账完成：全部账户账实相符" if report["balanced"] else \
+        f"对账完成：{len(report['mismatched'])} 个账户存在差异，请核查"
+    return ok(report, msg)
 
 
 # ---------- UC-105 账户/明细查询 ----------
