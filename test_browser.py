@@ -36,7 +36,7 @@ def ensure_loan_clerk2():
     tok = r.get("data", {}).get("token")
     if tok:
         _api("POST", "/api/admin/users", token=tok,
-             body={"employee_no": "L002", "name": "贷款复核员", "role": "LOAN_CLERK", "password": "123456"})
+             body={"employee_no": "L002", "name": "卢正阳", "role": "LOAN_CLERK", "password": "123456"})
 
 def check_text(expected, text):
     if isinstance(expected, list): return all(e in text for e in expected)
@@ -371,12 +371,13 @@ async def run_all():
         menu = await page.locator("#menu").text_content() or ""
         ok("贷款", "L00", "贷款员登录", "贷款申请" in menu)
 
-        # L01: 贷款申请→审批→放款（完整正向流程）
+        # L01: 贷款申请→审批→放款（完整正向流程；还款方式在申请时约定）
         await click_menu(page, "贷款申请办理")
         await fill(page, "ident", "110101199203054321")  # 李四
         await fill(page, "loan_type", "个人消费贷")
         await fill(page, "amount", "50000")
         await fill(page, "term_months", "12")
+        await fill(page, "repay_method", "等额本息")
         await fill(page, "purpose", "旅游消费")
         await submit(page)
         r = await get_page_text(page)
@@ -387,8 +388,10 @@ async def run_all():
         if contract_no:
             # L02a: 审贷分离负例——申请经办人 L001 自审被拦截
             await click_menu(page, "审核与审批")
-            await page.wait_for_timeout(2500)  # footerLoad 异步拉取待办列表
-            r = await page.locator("#content").text_content() or ""
+            for _ in range(10):  # footerLoad 异步拉取待办列表（Render 首次查询可能数秒）
+                r = await page.locator("#content").text_content() or ""
+                if "待审批" in r: break
+                await page.wait_for_timeout(1000)
             ok("贷款", "L02f", "审批页自动展示待审批列表", "待审批" in r and contract_no in r, r[:100])
             await fill(page, "contract_no", contract_no)
             await fill(page, "decision", "APPROVED")
@@ -405,16 +408,16 @@ async def run_all():
             await fill(page, "decision", "APPROVED")
             await fill(page, "approved_amount", "50000")
             await fill(page, "interest_rate", "0.045")
-            await fill(page, "term_months", "12")
-            await fill(page, "repay_method", "等额本息")
             await submit(page)
             r = await get_page_text(page)
             ok("贷款", "L02", "审批通过(L002复核·双工号)", check_text(["审批完成","已批复"], r), r[:100])
 
             # L03a: 审贷分离负例——审批人 L002 放款被拦截
             await click_menu(page, "放款处理")
-            await page.wait_for_timeout(2500)  # footerLoad 异步拉取待放款列表
-            r = await page.locator("#content").text_content() or ""
+            for _ in range(10):  # footerLoad 异步拉取待放款列表
+                r = await page.locator("#content").text_content() or ""
+                if "待放款" in r: break
+                await page.wait_for_timeout(1000)
             ok("贷款", "L03f", "放款页自动展示待放款列表", "待放款" in r and contract_no in r, r[:100])
             await fill(page, "contract_no", contract_no)
             await submit(page)

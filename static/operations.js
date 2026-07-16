@@ -230,10 +230,11 @@ const OPERATIONS = {
         { n: 'loan_type', label: '贷款类型', type: 'select', options: ['个人消费贷', '住房贷款', '经营贷款', '汽车贷款'] },
         { n: 'amount', label: '申请金额', type: 'number', required: true },
         { n: 'term_months', label: '期限(月)', type: 'number', required: true },
+        { n: 'repay_method', label: '还款方式', type: 'select', options: ['等额本息', '等额本金', '一次性还本付息'], hint: '客户申请时约定，放款后按此生成还款计划' },
         { n: 'purpose', label: '借款用途' },
         { n: 'guarantee', label: '担保方式', type: 'select', options: [{ value: '', label: '（可不填）' }, '信用', '抵押', '质押', '保证'] },
       ],
-      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '金额': money(d.loan.amount) }),
+      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '金额': money(d.loan.amount), '还款方式': d.loan.repay_method || '-' }),
     },
     {
       code: 'UC-202', name: '审核与审批', method: 'POST', path: '/api/loan/approve',
@@ -246,19 +247,18 @@ const OPERATIONS = {
           { k: 'loan_type', label: '类型' },
           { k: 'amount', label: '申请金额', fmt: money },
           { k: 'term_months', label: '期限(月)' },
+          { k: 'repay_method', label: '还款方式' },
           { k: 'status_label', label: '状态' },
           { k: 'purpose', label: '用途' },
           { k: 'created_at', label: '申请时间' },
-        ]) + '<p class="hint">批准金额/年利率/期限/还款方式留空 = 按申请金额与系统默认执行；审贷分离：申请经办人不得审批本笔。</p>'
+        ]) + '<p class="hint">审核职权 = 结论 + 风险定价：批准金额可核减（留空=按申请额）、年利率可在授权内浮动（留空=挂牌利率）；期限与还款方式按客户申请执行。审贷分离：申请经办人不得审批本笔。</p>'
           : '<p class="hint">当前没有待审批的贷款申请</p>'),
       },
       fields: [
         { n: 'contract_no', label: '合同号', required: true },
         { n: 'decision', label: '审批结论', type: 'select', options: [{ value: '', label: '请选择审批结论' }, { value: 'APPROVED', label: '通过' }, { value: 'REJECTED', label: '拒绝' }, { value: 'SUPPLEMENT', label: '待补件' }] },
-        { n: 'approved_amount', label: '批准金额', type: 'number', hint: '仅通过时填写' },
-        { n: 'interest_rate', label: '年利率', type: 'number', hint: '仅通过时填；小数如 0.0435=4.35%，留空用系统默认' },
-        { n: 'term_months', label: '期限（月）', type: 'number', hint: '仅通过时填' },
-        { n: 'repay_method', label: '还款方式', type: 'select', options: [{ value: '', label: '默认（等额本息）' }, '等额本息', '等额本金', '一次性还本付息'], hint: '决定放款时生成的还款计划' },
+        { n: 'approved_amount', label: '批准金额', type: 'number', hint: '可核减；留空 = 按申请金额' },
+        { n: 'interest_rate', label: '年利率', type: 'number', hint: '小数如 0.0435=4.35%；留空 = 系统挂牌利率' },
         { n: 'reason', label: '拒绝/补件原因', hint: '仅拒绝或待补件时填写' },
       ],
       result: d => {

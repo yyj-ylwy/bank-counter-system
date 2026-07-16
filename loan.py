@@ -105,12 +105,15 @@ def apply():
     loan_type = (d.get("loan_type") or "").strip()
     amount = D(d.get("amount") or 0)
     term = as_int(d.get("term_months"))
+    repay_method = (d.get("repay_method") or "等额本息").strip()  # 还款方式由客户申请时约定
     if loan_type not in C.LOAN_TYPES:  # E-2 类型非法
         return fail("E-2", "贷款类型非法")
     if amount <= 0 or amount > C.LOAN_AMOUNT_MAX:  # E-2 金额范围
         return fail("E-2", f"申请金额须大于 0 且不超过 {C.LOAN_AMOUNT_MAX:,}")
     if term <= 0 or term > C.LOAN_TERM_MAX:  # E-2 期限范围（防到期日计算溢出）
         return fail("E-2", f"期限须为 1~{C.LOAN_TERM_MAX} 个月")
+    if repay_method not in STRATEGIES:  # E-2 还款方式非法
+        return fail("E-2", "还款方式非法（等额本息/等额本金/一次性还本付息）")
 
     # E-1 黑名单 / 逾期（按期认定，与还款/罚息同口径）
     if cust["status"] == C.CUSTOMER_BLACKLIST:
@@ -132,6 +135,7 @@ def apply():
         "balance": m(0),
         "interest_rate": None,
         "term_months": term,
+        "repay_method": repay_method,
         "status": C.LOAN_PENDING,
         "purpose": (d.get("purpose") or "").strip(),
         "guarantee": (d.get("guarantee") or "").strip(),
@@ -172,7 +176,8 @@ def approve():
         rate = dec(d["interest_rate"]) if d.get("interest_rate") not in (None, "") \
             else get_param_dec(db, C.P_LOAN_RATE, "0.0435")
         term = as_int(d["term_months"]) if d.get("term_months") not in (None, "") else int(ln["term_months"])
-        method = (d.get("repay_method") or "等额本息").strip()
+        # 还款方式默认沿用客户申请时的约定；API 仍可覆写（界面已按职责精简，不再展示）
+        method = (d.get("repay_method") or "").strip() or (ln.get("repay_method") or "等额本息")
         if appr_amt <= 0 or appr_amt > C.LOAN_AMOUNT_MAX:
             return fail("E-VAL", f"批准金额须大于 0 且不超过 {C.LOAN_AMOUNT_MAX:,}", 400)
         if rate < 0 or rate > 1:  # 年利率为小数，上限 1（100%），防误填成 4.35 这类整数

@@ -66,7 +66,7 @@ def E(r): return r.get("error")
 def OK(r): return r.get("success") is True
 
 # 审贷分离（maker-checker）需要第二名贷款业务员：申请/审批/放款须不同人。幂等创建 L002（已存在返回 E-1 忽略）
-api("POST", "/api/admin/users", AD, json={"employee_no": "L002", "name": "贷款复核员",
+api("POST", "/api/admin/users", AD, json={"employee_no": "L002", "name": "卢正阳",
                                           "role": C.ROLE_LOAN, "password": "123456"})
 L2 = login("L002", "123456")
 
@@ -286,6 +286,11 @@ def t_loan():
     ok("202 利率>1→E-VAL [边界]", E(approve(new_loan(), interest_rate="4.35")) == "E-VAL")
     ok("202 期限361→E-VAL [边界]", E(approve(new_loan(), term_months="361")) == "E-VAL")
     ok("202 还款方式非法→E-VAL [判定]", E(approve(new_loan(), repay_method="先息后本")) == "E-VAL")
+    # 还款方式由客户申请时约定，审批不传则沿用申请值（界面已按职责精简）
+    ok("201 申请还款方式非法→E-2 [判定]", E(api("POST", "/api/loan/apply", L, json={"ident": bid, "loan_type": "个人消费贷", "amount": "1000", "term_months": "12", "repay_method": "先息后本"})) == "E-2")
+    r_eq = api("POST", "/api/loan/apply", L, json={"ident": bid, "loan_type": "个人消费贷", "amount": "1000", "term_months": "12", "repay_method": "等额本金"})
+    r_eqa = approve(r_eq["data"]["loan"]["contract_no"])
+    ok("202 审批默认沿用申请约定的还款方式 [规则]", OK(r_eqa) and r_eqa["data"]["loan"]["repay_method"] == "等额本金")
     ok("202 拒绝成功 [判定]", OK(api("POST", "/api/loan/approve", L2, json={"contract_no": new_loan(), "decision": "REJECTED", "reason": "资料不足"})))
     ln_sup = new_loan(); api("POST", "/api/loan/approve", L2, json={"contract_no": ln_sup, "decision": "SUPPLEMENT", "reason": "补件"})
     ok("202 待补件成功 [判定]", True)
