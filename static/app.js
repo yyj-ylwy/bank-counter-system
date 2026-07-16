@@ -73,7 +73,7 @@ const ICONS = {
   'UC-301': '🌐', 'UC-302': '💱', 'UC-303': '🔁', 'UC-304': '⚙️', 'UC-305': '🔍', 'UC-306': '📈', 'UC-307': '📌',
   'UC-401': '💳', 'UC-402': '✅', 'UC-403': '📈', 'UC-404': '🛒', 'UC-405': '💵',
   'UC-406': '🧾', 'UC-407': '🎁', 'UC-408': '🎫', 'UC-409': '🔒', 'UC-4Q': '🔍',
-  'UC-501': '👥', 'UC-501b': '➕', 'UC-501c': '✏️', 'UC-502': '⚙️', 'UC-502b': '🛠️', 'UC-503': '📜', 'UC-504': '💾', 'UC-504b': '♻️',
+  'UC-501': '👥', 'UC-501b': '➕', 'UC-501c': '✏️', 'UC-502': '⚙️', 'UC-502b': '🛠️', 'UC-502c': '💳', 'UC-503': '📜', 'UC-504': '💾', 'UC-504b': '♻️',
   'UC-601': '🧾', 'UC-602': '📈', 'UC-603': '🔃', 'UC-604': '📝', 'UC-605': '🛒', 'UC-606': '💸', 'UC-607': '📊', 'UC-608': '🧺', 'UC-609': '✅',
 };
 const icon = code => ICONS[code] || '▪️';
@@ -87,7 +87,7 @@ const SUBMIT = {
   'UC-401': '提交申请', 'UC-402': '提交审批结论', 'UC-403': '提交申请',
   'UC-404': '确认消费', 'UC-405': '确认还款', 'UC-408': '确认兑换', 'UC-409': '确认办理',
   // UC-406 本月消费记录 / UC-407 积分商城 均为 GET，走兜底"查询"
-  'UC-501b': '确认新建用户', 'UC-501c': '保存修改', 'UC-502b': '保存参数', 'UC-504b': '确认恢复数据',
+  'UC-501b': '确认新建用户', 'UC-501c': '保存修改', 'UC-502b': '保存参数', 'UC-502c': '保存卡种额度', 'UC-504b': '确认恢复数据',
   'UC-603': '刷新当日行情', 'UC-604': '提交测评', 'UC-605': '确认申购', 'UC-606': '确认赎回', 'UC-608': '保存产品', 'UC-609': '确认到账处理',
 };
 function submitLabel(op) {
@@ -102,7 +102,7 @@ const CONFIRM_OPS = new Set([
   'UC-303', 'UC-304', 'UC-307',                  // 外汇买卖/账户变更/实时挂牌
   'UC-404', 'UC-405',                            // 信用卡消费(扣额度)/信用卡还款(扣款)
   'UC-605', 'UC-606',                            // 理财申购/赎回
-  'UC-501c', 'UC-502b', 'UC-504b',               // 改用户/改参数/恢复数据
+  'UC-501c', 'UC-502b', 'UC-502c', 'UC-504b',    // 改用户/改参数/改卡种额度/恢复数据
 ]);
 // 把已填字段整理成"标签: 值"复核表，下拉显示中文标签、金额显示千分位
 function buildSummary(op, values) {
@@ -340,7 +340,8 @@ async function submitOp(op) {
   try {
     if (op.type === 'download') return await doDownload(op);
     if (op.type === 'upload') return await doUpload(op, values);
-    const req = op.method === 'GET' ? { query: values } : { body: values };
+    const sendVals = op.transform ? op.transform(values) : values;  // 如利率百分数→小数（confirm 仍显示用户输入）
+    const req = op.method === 'GET' ? { query: sendVals } : { body: sendVals };
     const { status, data } = await API.call(op.method, op.path, req);
     if (status === 401) return sessionExpired();
     handleResult(op, data);

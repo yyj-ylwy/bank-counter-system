@@ -39,6 +39,14 @@ def _spec(cc):
     return C.CARD_SPECS.get(cc.get("card_type"), {})
 
 
+def card_default_limit(db, card_type):
+    """卡种初始授信额度：优先取管理员在 cc_card_limit 里设的覆盖值，否则用 CARD_SPECS 默认。"""
+    ov = db.cc_card_limit.find_one({"card_type": card_type})
+    if ov and ov.get("credit_limit") is not None:
+        return D(dec(ov["credit_limit"]))
+    return D(C.CARD_SPECS.get(card_type, {}).get("default_limit", "0"))
+
+
 def _card_currency(cc):
     return _spec(cc).get("currency", "CNY")
 
@@ -195,7 +203,7 @@ def apply():
     write_audit(db, user_id=g.user["_id"], action="CC_APPLY", object_type="credit_card",
                 object_id=cc["card_no"], result=C.RESULT_SUCCESS, detail={"card_type": card_type})
     return ok({"credit_card": cc_view(cc, cust)},
-              f"{card_type} 申请已提交（默认额度 {spec['default_limit']} {spec['currency']}），状态：待审核")
+              f"{card_type} 申请已提交（默认额度 {card_default_limit(db, card_type)} {spec['currency']}），状态：待审核")
 
 
 # ---------- UC-402 第一步：确认审批事项（只读）：这张卡客户是要批卡还是提额？----------
@@ -215,7 +223,7 @@ def approve_quote():
 
     if cc["status"] == C.CC_PENDING:            # 事项一：新卡申请待审
         data.update({"purpose": "NEW_CARD", "purpose_label": "新卡申请审批",
-                     "grant_limit": float(D(spec.get("default_limit", "0")))})
+                     "grant_limit": float(card_default_limit(db, cc.get("card_type")))})
         return ok(data)
 
     if lr and lr.get("status") == "PENDING":    # 事项二：提额申请待审
@@ -276,7 +284,7 @@ def approve():
     # ===== 情形一：新卡申请审批 =====
     if cc["status"] == C.CC_PENDING:
         if decision == "APPROVED":
-            limit = D(spec.get("default_limit", "0"))  # 按卡种默认授信额度激活
+            limit = card_default_limit(db, cc.get("card_type"))  # 按卡种初始额度激活（管理员覆盖值优先）
             bill_day = as_int(d.get("bill_day"), 1)
             repay_day = as_int(d.get("repay_day"), 20)
             if not (1 <= bill_day <= 28 and 1 <= repay_day <= 28):

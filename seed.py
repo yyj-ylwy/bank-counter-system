@@ -59,7 +59,6 @@ DEFAULT_PARAMS = [
     ("RATE", C.P_LOAN_OVERDUE_RATE, "0.0005"),
     ("LIMIT", C.P_WITHDRAW_DAILY_LIMIT, "50000"),
     ("RATE", C.P_TRANSFER_FEE_RATE, "0.001"),
-    ("LIMIT", C.P_CC_LIMIT_MAX, "50000"),
     ("RATE", C.P_CC_MIN_REPAY_RATE, "0.10"),
     ("RATE", C.P_CC_CASH_FEE_RATE, "0.01"),
     ("LIMIT", C.P_CC_CASH_DAILY_LIMIT, "20000"),
@@ -98,6 +97,7 @@ def run_seed():
 
     _purge_legacy_cards(db)
     _purge_legacy_fx_params(db)
+    _purge_cc_limit_max_param(db)
 
     # --- 系统参数（缺失才补，已有的不覆盖）---
     for ptype, key, val in DEFAULT_PARAMS:
@@ -194,6 +194,18 @@ def _purge_legacy_fx_params(db):
         return
     db.system_param.delete_many(q)
     print(f"[seed] 已清理 {len(keys)} 个废弃的外汇买卖价参数：{'、'.join(sorted(keys))}")
+
+
+def _purge_cc_limit_max_param(db):
+    """清理僵尸参数「信用卡最高授信额度」CC_CREDIT_LIMIT_MAX。
+
+    全仓库无任何业务代码读取它，留在库里会被管理员参数页列出、误以为改了能生效。
+    卡种初始额度改由 cc_card_limit（覆盖值）+ CARD_SPECS（默认）决定，提额上限用 CC_LIMIT_DEPOSIT_RATIO。
+    幂等：清理后不再命中。
+    """
+    n = db.system_param.delete_many({"param_key": "CC_CREDIT_LIMIT_MAX"}).deleted_count
+    if n:
+        print(f"[seed] 已清理 {n} 个僵尸参数：CC_CREDIT_LIMIT_MAX（无代码读取）")
 
 
 def _seed_prices(db):

@@ -10,7 +10,7 @@ from werkzeug.security import generate_password_hash
 import constants as C
 from db import get_db, run_in_transaction, txn_supported
 from auth import require_role
-from common import ok, fail, oid, now, dec, parse_date_range, as_int
+from common import ok, fail, oid, now, dec, m, parse_date_range, as_int
 
 bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 admin = require_role(C.ROLE_ADMIN)
@@ -132,9 +132,15 @@ def list_params():
                "param_value": p["param_value"],
                "changed_at": p["changed_at"].strftime("%Y-%m-%d %H:%M:%S") if p.get("changed_at") else None}
               for p in db.system_param.find().sort("param_key", 1)]
-    # 信用卡四种卡的初始授信额度（来自卡种规格 CARD_SPECS，审批激活时按此额度授信；只读展示）
-    card_limits = [{"card_type": ct, "network": spec.get("network"), "currency": spec.get("currency"),
-                    "default_limit": spec.get("default_limit")} for ct, spec in C.CARD_SPECS.items()]
+    # 信用卡四种卡的初始授信额度：有效额度=管理员覆盖值(cc_card_limit)优先，否则卡种规格默认；审批激活时按此额度授信
+    overrides = {o["card_type"]: o for o in db.cc_card_limit.find()}
+    card_limits = []
+    for ct, spec in C.CARD_SPECS.items():
+        ov = overrides.get(ct)
+        eff = float(dec(ov["credit_limit"])) if ov and ov.get("credit_limit") is not None \
+            else float(dec(spec.get("default_limit", "0")))
+        card_limits.append({"card_type": ct, "network": spec.get("network"), "currency": spec.get("currency"),
+                            "default_limit": eff, "spec_default": float(dec(spec.get("default_limit", "0")))})
     return ok({"params": params, "card_limits": card_limits})
 
 
@@ -172,6 +178,33 @@ def upsert_param():
         upsert=True)
     _audit(db, "PARAM_UPDATE", "system_param", key, {"value": value})
     return ok(message="参数保存成功")
+
+
+@bp.post("/card-limit")
+@admin
+def set_card_limit():
+    """维护某卡种的初始授信额度（覆盖 CARD_SPECS 默认）。币种由卡种固定、不可改，只改数字。"""
+    d = _body()
+    card_type = (d.get("card_type") or "").strip()
+    if card_type not in C.CARD_SPECS:  # 只允许目录内的四种卡
+        return fail("E-REQ", "卡种非法", 400)
+    try:
+        x = float(str(d.get("limit")).strip())
+    except (TypeError, ValueError):
+        return fail("E-REQ", "初始额度必须是数字", 400)
+    if not math.isfinite(x) or x <= 0:
+        return fail("E-REQ", "初始额度必须是正数", 400)
+    if x > 1e8:  # 防天文数字
+        return fail("E-REQ", "初始额度过大（上限 1 亿）", 400)
+    db = get_db()
+    currency = C.CARD_SPECS[card_type]["currency"]
+    db.cc_card_limit.update_one(
+        {"card_type": card_type},
+        {"$set": {"card_type": card_type, "credit_limit": m(dec(x)), "currency": currency,
+                  "changed_by": g.user["_id"], "changed_at": now()}},
+        upsert=True)
+    _audit(db, "CARD_LIMIT_UPDATE", "credit_card", card_type, {"limit": str(x), "currency": currency})
+    return ok({"card_type": card_type, "default_limit": float(x), "currency": currency}, "卡种初始额度已更新")
 
 
 # ---------- UC-503 日志审计与异常追踪（只读，不写自审计）----------

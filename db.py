@@ -98,7 +98,8 @@ def ensure_indexes():
     existing = set(db.list_collection_names())
     for c in ("counters", "user_account", "customer", "account", "business_transaction",
               "loan", "fx_account", "credit_card", "credit_card_bill", "cc_redemption",
-              "audit_log", "system_param", "invest_product", "invest_price", "invest_holding"):
+              "cc_card_limit", "audit_log", "system_param", "invest_product", "invest_price",
+              "invest_holding"):
         if c not in existing:
             try:
                 db.create_collection(c)
@@ -157,6 +158,7 @@ def ensure_indexes():
     db.credit_card.create_index([("customer_id", ASCENDING)])
     db.credit_card_bill.create_index([("credit_card_id", ASCENDING), ("bill_cycle", ASCENDING)], unique=True)
     db.cc_redemption.create_index([("customer_id", ASCENDING), ("created_at", ASCENDING)])
+    db.cc_card_limit.create_index([("card_type", ASCENDING)], unique=True)  # 管理员对卡种初始额度的覆盖值，卡种唯一
     db.audit_log.create_index([("created_at", ASCENDING)])
     db.audit_log.create_index([("user_id", ASCENDING)])
     db.system_param.create_index([("param_key", ASCENDING)], unique=True)

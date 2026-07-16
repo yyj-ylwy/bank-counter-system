@@ -66,7 +66,7 @@ const PARAM_TYPE_LABEL = { RATE: '利率', LIMIT: '限额', FX_RATE: '汇率', O
 const PARAM_NAME = {
   LOAN_RATE: '贷款默认年利率', LOAN_OVERDUE_RATE: '逾期日罚息率',
   WITHDRAW_DAILY_LIMIT: '单日取款上限', TRANSFER_FEE_RATE: '转账手续费率',
-  CC_CREDIT_LIMIT_MAX: '信用卡最高授信额度', CC_MIN_REPAY_RATE: '信用卡最低还款比例',
+  CC_MIN_REPAY_RATE: '信用卡最低还款比例',
   CC_CASH_ADVANCE_FEE_RATE: '预借现金手续费率', CC_CASH_DAILY_LIMIT: '预借现金单日上限',
   CC_MIN_INTEREST_RATE: '最低还款剩余本金月利率', CC_LIMIT_DEPOSIT_RATIO: '提额上限占存款比例',
   FX_SPREAD: '外汇挂牌点差',
@@ -75,7 +75,7 @@ const PARAM_NAME = {
 const PARAM_RATE_KEYS = ['LOAN_RATE', 'LOAN_OVERDUE_RATE', 'TRANSFER_FEE_RATE', 'CC_MIN_REPAY_RATE', 'CC_CASH_ADVANCE_FEE_RATE', 'CC_MIN_INTEREST_RATE', 'CC_LIMIT_DEPOSIT_RATIO', 'FX_SPREAD'];
 const paramIsRate = k => PARAM_RATE_KEYS.includes(k);
 // 下拉标签直接标注类型，让管理员一眼看出该填小数还是填元
-const PARAM_OPTIONS = Object.entries(PARAM_NAME).map(([value, label]) => ({ value, label: label + (paramIsRate(value) ? '（利率·填小数）' : '（限额/金额·填元）') }));
+const PARAM_OPTIONS = Object.entries(PARAM_NAME).map(([value, label]) => ({ value, label: label + (paramIsRate(value) ? '（利率·填百分数，如40=40%）' : '（限额/金额·填元）') }));
 const paramTypeLabel = t => PARAM_TYPE_LABEL[t] || t || '其他';
 const paramName = k => PARAM_NAME[k] || k;
 // 值按类型带单位显示：利率→百分比，限额→元，汇率等原样
@@ -648,18 +648,35 @@ const OPERATIONS = {
       code: 'UC-502b', name: '维护参数', method: 'POST', path: '/api/admin/params',
       fields: [
         { n: 'param_key', label: '选择参数', type: 'select', options: PARAM_OPTIONS },
-        { n: 'param_value', label: '新的值', required: true, hint: '利率填小数（0.30 表示 30%）；限额/金额直接填数字（单位：元）' },
+        { n: 'param_value', label: '新的值', required: true, hint: '利率填百分数(如40表示40%)；限额/金额填元' },
       ],
       lookup: {
         byField: 'param_key',
         path: '/api/admin/params',
         find: (d, key) => (d.params || []).find(p => p.param_key === key),
-        fill: p => ({ param_value: p.param_value }),  // 把当前值回填到输入框，避免"盲改"
+        fill: p => ({ param_value: p.param_type === 'RATE' ? String(+p.param_value * 100) : p.param_value }),  // 利率以百分数回填，避免"盲改"
         show: p => `当前值：${paramValue(p.param_value, p)}　类型：${paramTypeLabel(p.param_type)}`
-          + (p.param_type === 'RATE' ? '（利率，请填小数：0.30 = 30%）' : p.param_type === 'LIMIT' ? '（限额，请填金额，单位元）' : ''),
+          + (p.param_type === 'RATE' ? '（利率，请填百分数：40 = 40%）' : p.param_type === 'LIMIT' ? '（限额，请填金额，单位元）' : ''),
       },
-      hint: '先选参数点「查询并回填」：会带出当前值、并标明它是"利率(填小数，如0.30=30%)"还是"限额(填元)"，看清后再改。改后立即生效。',
+      // 利率类：界面填百分数、发送时才转回小数（后端仍存小数，参数 API 口径不变）
+      transform: v => paramIsRate(v.param_key) ? Object.assign({}, v, { param_value: String(+v.param_value / 100) }) : v,
+      hint: '先选参数点「查询并回填」：会带出当前值、并标明它是"利率(填百分数，如40=40%)"还是"限额(填元)"，看清后再改。改后立即生效。',
       result: d => `<p class="hint">保存成功，可到「参数列表」查看最新值</p>`,
+    },
+    {
+      code: 'UC-502c', name: '卡种初始额度维护', method: 'POST', path: '/api/admin/card-limit',
+      fields: [
+        { n: 'card_type', label: '卡种', type: 'select', options: [
+          { value: '银联白金卡', label: '银联白金卡（CNY）' }, { value: '银联钻石卡', label: '银联钻石卡（CNY）' },
+          { value: 'Visa Platinum', label: 'Visa Platinum（USD）' }, { value: 'MasterCard World Elite', label: 'MasterCard World Elite（USD）' } ] },
+        { n: 'limit', label: '初始授信额度', type: 'number', required: true, hint: '仅改数字；币种由卡种固定(银联=CNY，Visa/万事达=USD)，不可改' },
+      ],
+      lookup: { byField: 'card_type', path: '/api/admin/params',
+        find: (d, key) => (d.card_limits || []).find(c => c.card_type === key),
+        fill: c => ({ limit: c.default_limit }),
+        show: c => `当前初始额度：${money(c.default_limit)} ${c.currency}（卡种规格默认 ${money(c.spec_default)}）` },
+      hint: '选卡种点「查询并回填」看当前额度，改数字保存；影响之后新审批激活的初始授信额度。',
+      result: d => kv({ '卡种': d.card_type, '新初始额度': money(d.default_limit) + ' ' + d.currency }),
     },
     {
       code: 'UC-503', name: '日志审计', method: 'GET', path: '/api/admin/audit',

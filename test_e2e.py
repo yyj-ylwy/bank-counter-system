@@ -491,6 +491,21 @@ def t_creditcard():
     ok("4Q 按身份查到 [条件]", OK(api("GET", "/api/creditcard/query", CCK, query={"ident": vid})))
     ok("4Q 未找到→E-1 [判定]", E(api("GET", "/api/creditcard/query", CCK, query={"ident": "X"})) == "E-1")
 
+    # ---------- 管理员改卡种初始额度→新审批激活按覆盖值授信（功能一）----------
+    ok("502c 卡种非法→E-REQ [判定]", E(api("POST", "/api/admin/card-limit", AD, json={"card_type": "普卡", "limit": "30000"})) == "E-REQ")
+    ok("502c 额度非正数→E-REQ [边界]", E(api("POST", "/api/admin/card-limit", AD, json={"card_type": "银联白金卡", "limit": "0"})) == "E-REQ")
+    ok("502c 改银联白金卡初始额度=30000 [正常流]", OK(api("POST", "/api/admin/card-limit", AD, json={"card_type": "银联白金卡", "limit": "30000"})))
+    lp = api("GET", "/api/admin/params", AD, query={})
+    _wp = [c for c in lp["data"]["card_limits"] if c["card_type"] == "银联白金卡"][0]
+    ok("502c 参数页有效额度=30000&规格默认=20000 [查询]", _wp["default_limit"] == 30000.0 and _wp["spec_default"] == 20000.0)
+    ovc = open_acct(bal="0")  # 新客户，走白金卡 申请→审批 验证覆盖值生效
+    api("POST", "/api/creditcard/apply", CCK, json={"ident": ovc["id_no"], "card_type": "银联白金卡"})
+    ovaq = api("GET", "/api/creditcard/approve-quote", CCK, query={"ident": ovc["id_no"], "card_type": "银联白金卡"})
+    ok("502c approve-quote 授予额度=覆盖值30000 [规则]", OK(ovaq) and abs(ovaq["data"]["grant_limit"] - 30000.0) < 0.01)
+    api("POST", "/api/creditcard/approve", CCK, json={"ident": ovc["id_no"], "card_type": "银联白金卡", "decision": "APPROVED", "bill_day": "5", "repay_day": "20"})
+    ovq = api("GET", "/api/creditcard/query", CCK, query={"ident": ovc["id_no"]})
+    ok("502c 激活后 credit_limit=覆盖值30000 [规则]", OK(ovq) and ovq["data"]["cards"][0]["credit_limit"] == 30000.0)
+
     # ---------- 历史卡种（重做前的普卡）：不予受理、且启动时被清理 ----------
     lg = open_acct(bal="1000")
     lgc = db.customer.find_one({"id_no": lg["id_no"]})
