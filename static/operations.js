@@ -237,6 +237,21 @@ const OPERATIONS = {
     },
     {
       code: 'UC-202', name: '审核与审批', method: 'POST', path: '/api/loan/approve',
+      // 待办列表：打开页面自动列出待审核/待补件申请，对照列表填合同号逐笔审批
+      footerLoad: {
+        path: '/api/loan/query?status=PENDING,SUPPLEMENT',
+        render: d => '<h4>待审批列表</h4>' + (d.loans.length ? tbl(d.loans, [
+          { k: 'contract_no', label: '合同号' },
+          { k: 'customer', label: '客户', fmt: c => c ? c.name : '-' },
+          { k: 'loan_type', label: '类型' },
+          { k: 'amount', label: '申请金额', fmt: money },
+          { k: 'term_months', label: '期限(月)' },
+          { k: 'status_label', label: '状态' },
+          { k: 'purpose', label: '用途' },
+          { k: 'created_at', label: '申请时间' },
+        ]) + '<p class="hint">批准金额/年利率/期限/还款方式留空 = 按申请金额与系统默认执行；审贷分离：申请经办人不得审批本笔。</p>'
+          : '<p class="hint">当前没有待审批的贷款申请</p>'),
+      },
       fields: [
         { n: 'contract_no', label: '合同号', required: true },
         { n: 'decision', label: '审批结论', type: 'select', options: [{ value: '', label: '请选择审批结论' }, { value: 'APPROVED', label: '通过' }, { value: 'REJECTED', label: '拒绝' }, { value: 'SUPPLEMENT', label: '待补件' }] },
@@ -256,6 +271,21 @@ const OPERATIONS = {
     },
     {
       code: 'UC-203', name: '放款处理', method: 'POST', path: '/api/loan/disburse',
+      // 待办列表：已批复待放款的合同（审贷分离：放款人不得是本笔审批人）
+      footerLoad: {
+        path: '/api/loan/query?status=APPROVED',
+        render: d => '<h4>待放款列表</h4>' + (d.loans.length ? tbl(d.loans, [
+          { k: 'contract_no', label: '合同号' },
+          { k: 'customer', label: '客户', fmt: c => c ? c.name : '-' },
+          { k: 'loan_type', label: '类型' },
+          { k: 'amount', label: '批准金额', fmt: money },
+          { k: 'interest_rate', label: '年利率', fmt: pct },
+          { k: 'term_months', label: '期限(月)' },
+          { k: 'repay_method', label: '还款方式' },
+          { k: 'approved_by_no', label: '审批人' },
+        ]) + '<p class="hint">审贷分离：本笔审批人不得执行放款；放款成功即按还款方式生成逐期还款计划。</p>'
+          : '<p class="hint">当前没有已批复待放款的贷款</p>'),
+      },
       fields: [{ n: 'contract_no', label: '合同号', required: true }],
       result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余本金': money(d.loan.balance), '还款方式': d.loan.repay_method || '-', '到期日': d.loan.due_date, '放款人': d.loan.disbursed_by_no || '-' })
         + loanPlanSummary(d.loan)

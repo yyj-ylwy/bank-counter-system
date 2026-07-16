@@ -465,7 +465,9 @@ def query():
             cust = find_customer(db, ident=ident)
             q["customer_id"] = cust["_id"] if cust else None
     if request.args.get("status"):
-        q["status"] = request.args["status"].strip().upper()
+        # 支持逗号分隔多状态（如审批页待办列表 status=PENDING,SUPPLEMENT 一次取回）
+        sts = [s.strip().upper() for s in request.args["status"].split(",") if s.strip()]
+        q["status"] = sts[0] if len(sts) == 1 else {"$in": sts}
     if request.args.get("loan_type"):
         q["loan_type"] = request.args["loan_type"].strip()
     rng = parse_date_range(request.args.get("start"), request.args.get("end"))

@@ -368,6 +368,10 @@ def t_loan():
     # UC-206 查询统计（统一 ident）
     ok("206 日期非法→E-DATE [判定]", E(api("GET", "/api/loan/query", L, query={"start": "2026/1/1"})) == "E-DATE")
     ok("206 组合条件查询 [正常流]", OK(api("GET", "/api/loan/query", L, query={"ident": bid, "status": "PAID_OFF"})))
+    # 审批/放款待办列表复用本接口：状态支持逗号多选
+    r206m = api("GET", "/api/loan/query", L, query={"status": "PENDING,SUPPLEMENT"})
+    ok("206 状态逗号多选(待审批列表) [规则]", OK(r206m) and len(r206m["data"]["loans"]) >= 1
+       and all(l["status"] in (C.LOAN_PENDING, C.LOAN_SUPPLEMENT) for l in r206m["data"]["loans"]))
     ok("206 无过滤全表统计 [正常流]", OK(api("GET", "/api/loan/query", L, query={})))
 
 

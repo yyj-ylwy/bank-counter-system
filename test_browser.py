@@ -387,6 +387,9 @@ async def run_all():
         if contract_no:
             # L02a: 审贷分离负例——申请经办人 L001 自审被拦截
             await click_menu(page, "审核与审批")
+            await page.wait_for_timeout(2500)  # footerLoad 异步拉取待办列表
+            r = await page.locator("#content").text_content() or ""
+            ok("贷款", "L02f", "审批页自动展示待审批列表", "待审批" in r and contract_no in r, r[:100])
             await fill(page, "contract_no", contract_no)
             await fill(page, "decision", "APPROVED")
             await fill(page, "interest_rate", "0.045")
@@ -410,6 +413,9 @@ async def run_all():
 
             # L03a: 审贷分离负例——审批人 L002 放款被拦截
             await click_menu(page, "放款处理")
+            await page.wait_for_timeout(2500)  # footerLoad 异步拉取待放款列表
+            r = await page.locator("#content").text_content() or ""
+            ok("贷款", "L03f", "放款页自动展示待放款列表", "待放款" in r and contract_no in r, r[:100])
             await fill(page, "contract_no", contract_no)
             await submit(page)
             r = await get_page_text(page)
