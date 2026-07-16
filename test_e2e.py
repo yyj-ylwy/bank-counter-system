@@ -491,20 +491,27 @@ def t_creditcard():
     ok("4Q 按身份查到 [条件]", OK(api("GET", "/api/creditcard/query", CCK, query={"ident": vid})))
     ok("4Q 未找到→E-1 [判定]", E(api("GET", "/api/creditcard/query", CCK, query={"ident": "X"})) == "E-1")
 
-    # ---------- 管理员改卡种初始额度→新审批激活按覆盖值授信（功能一）----------
-    ok("502c 卡种非法→E-REQ [判定]", E(api("POST", "/api/admin/card-limit", AD, json={"card_type": "普卡", "limit": "30000"})) == "E-REQ")
-    ok("502c 额度非正数→E-REQ [边界]", E(api("POST", "/api/admin/card-limit", AD, json={"card_type": "银联白金卡", "limit": "0"})) == "E-REQ")
-    ok("502c 改银联白金卡初始额度=30000 [正常流]", OK(api("POST", "/api/admin/card-limit", AD, json={"card_type": "银联白金卡", "limit": "30000"})))
+    # ---------- 管理员改卡种初始额度（并入「维护参数」/api/admin/params）→新审批激活按覆盖值授信（功能一）----------
+    ok("502b 卡种额度键非法→E-1 [判定]", E(api("POST", "/api/admin/params", AD, json={"param_key": "CARD_LIMIT_NOPE", "param_value": "30000"})) == "E-1")
+    ok("502b 卡种额度非正数→E-1 [边界]", E(api("POST", "/api/admin/params", AD, json={"param_key": "CARD_LIMIT_UNIONPAY_PLATINUM", "param_value": "0"})) == "E-1")
+    ok("502b 改银联白金卡初始额度=30000 [正常流]", OK(api("POST", "/api/admin/params", AD, json={"param_key": "CARD_LIMIT_UNIONPAY_PLATINUM", "param_value": "30000"})))
     lp = api("GET", "/api/admin/params", AD, query={})
     _wp = [c for c in lp["data"]["card_limits"] if c["card_type"] == "银联白金卡"][0]
-    ok("502c 参数页有效额度=30000&规格默认=20000 [查询]", _wp["default_limit"] == 30000.0 and _wp["spec_default"] == 20000.0)
+    ok("502b 参数页有效额度=30000&规格默认=20000 [查询]", _wp["default_limit"] == 30000.0 and _wp["spec_default"] == 20000.0)
+    ok("502b 参数页卡种带 param_key 伪键 [一致性]", _wp["param_key"] == "CARD_LIMIT_UNIONPAY_PLATINUM")
     ovc = open_acct(bal="0")  # 新客户，走白金卡 申请→审批 验证覆盖值生效
     api("POST", "/api/creditcard/apply", CCK, json={"ident": ovc["id_no"], "card_type": "银联白金卡"})
     ovaq = api("GET", "/api/creditcard/approve-quote", CCK, query={"ident": ovc["id_no"], "card_type": "银联白金卡"})
-    ok("502c approve-quote 授予额度=覆盖值30000 [规则]", OK(ovaq) and abs(ovaq["data"]["grant_limit"] - 30000.0) < 0.01)
+    ok("502b approve-quote 授予额度=覆盖值30000 [规则]", OK(ovaq) and abs(ovaq["data"]["grant_limit"] - 30000.0) < 0.01)
     api("POST", "/api/creditcard/approve", CCK, json={"ident": ovc["id_no"], "card_type": "银联白金卡", "decision": "APPROVED", "bill_day": "5", "repay_day": "20"})
     ovq = api("GET", "/api/creditcard/query", CCK, query={"ident": ovc["id_no"]})
-    ok("502c 激活后 credit_limit=覆盖值30000 [规则]", OK(ovq) and ovq["data"]["cards"][0]["credit_limit"] == 30000.0)
+    ok("502b 激活后 credit_limit=覆盖值30000 [规则]", OK(ovq) and ovq["data"]["cards"][0]["credit_limit"] == 30000.0)
+
+    # ---------- UC-401 卡种权益对比（动态：4 张卡，覆盖后额度反映新值）----------
+    cbf = api("GET", "/api/creditcard/card-benefits", CCK, query={})
+    ok("401 card-benefits 返回 4 张卡 [正常流]", OK(cbf) and len(cbf["data"]["cards"]) == 4)
+    _wpb = [c for c in cbf["data"]["cards"] if c["card_type"] == "银联白金卡"][0]
+    ok("401 card-benefits 白金卡 limit 反映覆盖值30000 [规则]", _wpb["limit"] == 30000.0)
 
     # ---------- 历史卡种（重做前的普卡）：不予受理、且启动时被清理 ----------
     lg = open_acct(bal="1000")

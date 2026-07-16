@@ -152,6 +152,14 @@ CARD_SPECS = {
 }
 CARD_TYPES = list(CARD_SPECS.keys())
 
+# 卡种初始额度维护：并入「维护参数」用的伪参数键 → 卡种；后端路由到 cc_card_limit 集合
+CC_CARD_LIMIT_KEYS = {
+    "CARD_LIMIT_UNIONPAY_PLATINUM": "银联白金卡",
+    "CARD_LIMIT_UNIONPAY_DIAMOND": "银联钻石卡",
+    "CARD_LIMIT_VISA_PLATINUM": "Visa Platinum",
+    "CARD_LIMIT_MASTERCARD_ELITE": "MasterCard World Elite",
+}
+
 # ---- 积分商城奖品（信用卡模块内，积分兑换）----
 CC_PRIZES = [
     {"id": "FLIGHT_INTL", "name": "国际航线机票兑换券", "points": 80000, "desc": "经济舱国际单程机票"},

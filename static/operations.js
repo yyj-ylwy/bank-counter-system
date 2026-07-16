@@ -70,6 +70,9 @@ const PARAM_NAME = {
   CC_CASH_ADVANCE_FEE_RATE: '预借现金手续费率', CC_CASH_DAILY_LIMIT: '预借现金单日上限',
   CC_MIN_INTEREST_RATE: '最低还款剩余本金月利率', CC_LIMIT_DEPOSIT_RATIO: '提额上限占存款比例',
   FX_SPREAD: '外汇挂牌点差',
+  // 卡种初始额度维护（并入「维护参数」的伪参数键，后端路由到 cc_card_limit）——非利率键
+  CARD_LIMIT_UNIONPAY_PLATINUM: '银联白金卡 初始额度', CARD_LIMIT_UNIONPAY_DIAMOND: '银联钻石卡 初始额度',
+  CARD_LIMIT_VISA_PLATINUM: 'Visa Platinum 初始额度', CARD_LIMIT_MASTERCARD_ELITE: 'MasterCard World Elite 初始额度',
 };
 // 哪些参数属于"利率/比例"(输入小数、显示百分比)，其余是"限额/金额"(输入并显示为元) —— 与后端 RATE_PARAM_KEYS 对应
 const PARAM_RATE_KEYS = ['LOAN_RATE', 'LOAN_OVERDUE_RATE', 'TRANSFER_FEE_RATE', 'CC_MIN_REPAY_RATE', 'CC_CASH_ADVANCE_FEE_RATE', 'CC_MIN_INTEREST_RATE', 'CC_LIMIT_DEPOSIT_RATIO', 'FX_SPREAD'];
@@ -300,16 +303,19 @@ const OPERATIONS = {
         { n: 'occupation', label: '职业' }, { n: 'monthly_income', label: '月收入', type: 'number' },
       ],
       hint: '每人每种卡最多一张。各卡种权益见下方对比表。',
-      // 表单按钮下方：四种卡的卡组织/返现/积分等优惠对比，供柜员向客户介绍
-      footer: () => '<h4>卡种权益对比</h4>' + tbl(CARD_BENEFITS, [
-        { k: 'type', label: '卡种' },
-        { k: 'network', label: '卡组织' },
-        { k: 'currency', label: '计价币种' },
-        { k: 'limit', label: '默认授信额度', fmt: money },
-        { k: 'cashback', label: '消费返现' },
-        { k: 'points', label: '消费积分' },
-        { k: 'fxfee', label: '外币交易费' },
-      ]) + '<p class="hint">返现按消费金额折本卡币种后计算，实时入客户人民币储蓄账户；积分归客户账户所有、该客户名下各卡消费累计共享，可在「UC-407 积分商城」兑换机票/酒店/接机专车等奖品。外币交易费在消费币种与本卡币种不一致时收取，MasterCard World Elite 免除。</p>',
+      // 表单按钮下方：四种卡的卡组织/返现/积分等优惠对比，供柜员向客户介绍（后端动态返回有效额度）
+      footerLoad: {
+        path: '/api/creditcard/card-benefits',
+        render: d => '<h4>卡种权益对比</h4>' + tbl(d.cards, [
+          { k: 'card_type', label: '卡种' },
+          { k: 'network', label: '卡组织' },
+          { k: 'currency', label: '计价币种' },
+          { k: 'limit', label: '初始授信额度', fmt: money },
+          { k: 'cashback', label: '消费返现' },
+          { k: 'points', label: '消费积分' },
+          { k: 'fxfee', label: '外币交易费' },
+        ]) + '<p class="hint">返现按消费金额折本卡币种后计算，实时入客户人民币储蓄账户；积分归客户账户所有、名下各卡累计共享，可在「积分商城」兑换；外币交易费在消费币种与本卡币种不一致时收取，MasterCard World Elite 免除。初始授信额度可在「维护参数」调整。</p>',
+      },
       result: d => kv({ '卡号': d.credit_card.card_no, '卡种': d.credit_card.card_type, '卡组织': d.credit_card.network, '币种': d.credit_card.currency, '状态': d.credit_card.status_label }),
     },
     {
@@ -358,7 +364,7 @@ const OPERATIONS = {
           return kvRows(rows);
         },
       },
-      hint: '两步：① 填身份、选卡种后点「确认审批事项」，带出客户是申请新卡还是提额（提额会给出额度/余额对比与红绿建议）；② 再选审批结论点「提交审批结论」。新卡按卡种默认额度激活；提额新额度不得高于存款的 30%。',
+      hint: '两步：① 填身份、选卡种后点「确认审批事项」，带出客户是申请新卡还是提额（提额会给出额度/余额对比与红绿建议）；② 再选审批结论点「提交审批结论」。新卡按卡种默认额度激活；提额新额度不得高于存款的规定比例（见系统参数「提额上限占存款比例」，点『确认审批事项』会按当前比例给出上限与红绿建议）。',
       result: d => {
         if (!d.credit_card) return '';
         const c = d.credit_card, base = { '卡号': c.card_no, '卡种': c.card_type, '状态': c.status_label };
@@ -375,7 +381,7 @@ const OPERATIONS = {
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号，任填其一' },
         { n: 'card_type', label: '卡种', type: 'select', options: CARD_TYPES, required: true },
-        { n: 'new_limit', label: '新授信额度', type: 'number', required: true, hint: '须高于当前额度；审批时不得超过存款的 30%' },
+        { n: 'new_limit', label: '新授信额度', type: 'number', required: true, hint: '须高于当前额度；审批时不得超过存款的规定比例（见系统参数「提额上限占存款比例」）' },
         { n: 'reason', label: '申请理由' },
       ],
       result: d => kv({ '卡号': d.credit_card.card_no, '当前额度': money(d.credit_card.credit_limit) + ' ' + d.credit_card.currency, '申请额度': d.credit_card.limit_req ? money(d.credit_card.limit_req.new_limit) + ' ' + d.credit_card.currency : '-', '申请状态': d.credit_card.limit_req ? d.credit_card.limit_req.status : '-' }),
@@ -443,7 +449,7 @@ const OPERATIONS = {
           ]);
         },
       },
-      hint: '两步：① 填身份、选卡种后点「确认应还金额」，带出该卡各方式应还多少；② 再选还款方式点「确认还款」。人民币卡用人民币储蓄账户还、美元卡用美元外汇子户还；多还部分退回；最低额还款的剩余本金按月利率 5% 计息。',
+      hint: '两步：① 填身份、选卡种后点「确认应还金额」，带出该卡各方式应还多少；② 再选还款方式点「确认还款」。人民币卡用人民币储蓄账户还、美元卡用美元外汇子户还；多还部分退回；最低额还款的剩余本金按系统参数「最低还款剩余本金月利率」计息（点『确认应还金额』会给出具体金额）。',
       result: d => kv({ '卡号': d.credit_card.card_no, '本次还款': money(d.pay) + ' ' + d.currency, '还款来源': d.fund, '循环利息': money(d.interest) + ' ' + d.currency, '剩余欠款': money(d.outstanding) + ' ' + d.currency, '可用额度': money(d.available_limit) + ' ' + d.currency }),
     },
     {
@@ -648,35 +654,26 @@ const OPERATIONS = {
       code: 'UC-502b', name: '维护参数', method: 'POST', path: '/api/admin/params',
       fields: [
         { n: 'param_key', label: '选择参数', type: 'select', options: PARAM_OPTIONS },
-        { n: 'param_value', label: '新的值', required: true, hint: '利率填百分数(如40表示40%)；限额/金额填元' },
+        { n: 'param_value', label: '新的值', required: true, hint: '利率填百分数(如40=40%)；限额/金额/卡种额度填元' },
       ],
       lookup: {
         byField: 'param_key',
         path: '/api/admin/params',
-        find: (d, key) => (d.params || []).find(p => p.param_key === key),
-        fill: p => ({ param_value: p.param_type === 'RATE' ? String(+p.param_value * 100) : p.param_value }),  // 利率以百分数回填，避免"盲改"
-        show: p => `当前值：${paramValue(p.param_value, p)}　类型：${paramTypeLabel(p.param_type)}`
-          + (p.param_type === 'RATE' ? '（利率，请填百分数：40 = 40%）' : p.param_type === 'LIMIT' ? '（限额，请填金额，单位元）' : ''),
+        // 系统参数在 params 里找、卡种初始额度在 card_limits 里找（两者都带 param_key）
+        find: (d, key) => (d.params || []).find(p => p.param_key === key) || (d.card_limits || []).find(c => c.param_key === key),
+        fill: r => r.param_key && r.param_key.startsWith('CARD_LIMIT_') ? { param_value: String(r.default_limit) }  // 卡种额度：回填有效额度
+          : r.param_type === 'RATE' ? { param_value: String(+r.param_value * 100) }  // 利率以百分数回填，避免"盲改"
+          : { param_value: r.param_value },
+        show: r => r.param_key && r.param_key.startsWith('CARD_LIMIT_')
+          ? `当前初始额度：${money(r.default_limit)} ${r.currency}（卡种规格默认 ${money(r.spec_default)}）`
+          : (r.param_type === 'RATE'
+            ? `当前值：${paramValue(r.param_value, r)}　类型：利率（请填百分数：40=40%）`
+            : `当前值：${paramValue(r.param_value, r)}　类型：限额（请填金额，单位元）`),
       },
-      // 利率类：界面填百分数、发送时才转回小数（后端仍存小数，参数 API 口径不变）
+      // 仅利率键界面填百分数、发送时转回小数；卡种额度键不是利率、不转换，原样发数字，后端按 key 路由
       transform: v => paramIsRate(v.param_key) ? Object.assign({}, v, { param_value: String(+v.param_value / 100) }) : v,
       hint: '先选参数点「查询并回填」：会带出当前值、并标明它是"利率(填百分数，如40=40%)"还是"限额(填元)"，看清后再改。改后立即生效。',
       result: d => `<p class="hint">保存成功，可到「参数列表」查看最新值</p>`,
-    },
-    {
-      code: 'UC-502c', name: '卡种初始额度维护', method: 'POST', path: '/api/admin/card-limit',
-      fields: [
-        { n: 'card_type', label: '卡种', type: 'select', options: [
-          { value: '银联白金卡', label: '银联白金卡（CNY）' }, { value: '银联钻石卡', label: '银联钻石卡（CNY）' },
-          { value: 'Visa Platinum', label: 'Visa Platinum（USD）' }, { value: 'MasterCard World Elite', label: 'MasterCard World Elite（USD）' } ] },
-        { n: 'limit', label: '初始授信额度', type: 'number', required: true, hint: '仅改数字；币种由卡种固定(银联=CNY，Visa/万事达=USD)，不可改' },
-      ],
-      lookup: { byField: 'card_type', path: '/api/admin/params',
-        find: (d, key) => (d.card_limits || []).find(c => c.card_type === key),
-        fill: c => ({ limit: c.default_limit }),
-        show: c => `当前初始额度：${money(c.default_limit)} ${c.currency}（卡种规格默认 ${money(c.spec_default)}）` },
-      hint: '选卡种点「查询并回填」看当前额度，改数字保存；影响之后新审批激活的初始授信额度。',
-      result: d => kv({ '卡种': d.card_type, '新初始额度': money(d.default_limit) + ' ' + d.currency }),
     },
     {
       code: 'UC-503', name: '日志审计', method: 'GET', path: '/api/admin/audit',

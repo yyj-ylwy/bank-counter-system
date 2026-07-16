@@ -801,3 +801,29 @@ def query():
                                                        "status": C.FX_NORMAL})]
         result.append(v)
     return ok({"cards": result})
+
+
+# ---------- UC-401 卡种权益对比（动态：有效额度取自 card_default_limit，展示串由 CARD_SPECS 数值生成）----------
+_CURRENCY_LABEL = {"CNY": "人民币 CNY", "USD": "美元 USD"}
+
+
+@bp.get("/card-benefits")
+@clerk
+def card_benefits():
+    db = get_db()
+    cards = []
+    for ct, spec in C.CARD_SPECS.items():
+        cb = float(_rate(spec.get("cashback_rate")))
+        pts = int(_rate(spec.get("points_per_unit")))
+        fxf = float(_rate(spec.get("fx_fee_rate")))
+        cur = spec.get("currency", "CNY")
+        cards.append({
+            "card_type": ct,
+            "network": spec.get("network"),
+            "currency": _CURRENCY_LABEL.get(cur, cur),
+            "limit": float(card_default_limit(db, ct)),
+            "cashback": f"{cb * 100:g}%（入人民币储蓄账户）" if cb > 0 else "—",
+            "points": f"每消费 1 美元得 {pts} 分" if pts > 0 else "—",
+            "fxfee": "免除" if spec.get("waive_fx_fee") else f"{fxf * 100:g}%",
+        })
+    return ok({"cards": cards})
