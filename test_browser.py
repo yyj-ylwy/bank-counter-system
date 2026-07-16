@@ -441,13 +441,13 @@ async def run_all():
             r = await get_page_text(page)
             ok("贷款", "L04", "还款10000(瀑布冲抵)", check_text("还款成功", r), r[:100])
 
-            # L05: 提前结清（SETTLE：金额留空按试算扣款，减免未到期利息）
+            # L05: 大额自动提前结清（金额≥结清试算额→自动 SETTLE，减免未到期利息、仅扣试算额）
             await click_menu(page, "还款登记")
             await fill(page, "ident", contract_no)
-            await fill(page, "mode", "SETTLE")
+            await fill(page, "amount", "999999")
             await submit(page)
             r = await get_page_text(page)
-            ok("贷款", "L05", "提前结清(减免未到期利息)", check_text("已结清", r), r[:120])
+            ok("贷款", "L05", "大额自动提前结清", check_text("已结清", r), r[:120])
 
             # L06: 逾期查询
             await click_menu(page, "逾期查询")

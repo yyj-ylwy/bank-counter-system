@@ -378,6 +378,7 @@ function handleResult(op, data) {
     } else if (data.data) {
       $('result').innerHTML = defaultResult(data.data);
     }
+    if (op.footerLoad) loadFooter(op);  // 提交后刷新待办列表（审批/放款
   } else {
     // 只给用户看中文说明；内部错误码(E-1等)降级为悬浮提示，供技术排查
     banner('err', data.message || '操作失败', data.error);
@@ -395,6 +396,8 @@ function banner(kind, msg, code) {
   if (!msg) { b.innerHTML = ''; return; }
   const title = code ? ` title="${esc(code)}"` : '';  // 错误码悬浮显示，不占正文
   b.innerHTML = `<div class="alert ${kind === 'ok' ? 'ok' : 'err'}"${title}>${esc(msg)}</div>`;
+  // 表单/待办列表较长时提交按钮在视口下方，结果渲染在顶部会看不见——自动滚回提示处
+  b.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // 会话过期统一处理：退回登录页并在登录框提示

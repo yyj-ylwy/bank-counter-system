@@ -319,7 +319,7 @@ def t_loan():
     # UC-204 还款（瀑布：罚息→利息→本金；SETTLE 提前结清减免未到期利息；request_id 幂等）
     ok("204 金额0→E-AMT [边界]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "0"})) == "E-AMT")
     ok("204 mode非法→E-OP [判定]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1", "mode": "HALF"})) == "E-OP")
-    ok("204 超额还款→E-3 [边界]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "999999"})) == "E-3")
+    ok("204 超额还款(显式NORMAL)→E-3 [边界]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "999999", "mode": "NORMAL"})) == "E-3")
     # base 账户放款后余额=50000，还款需从账户扣；先存够
     api("POST", "/api/savings/deposit", S, json={"ident": base["account_no"], "amount": "60000"})
     r204 = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "10000"})
@@ -334,10 +334,12 @@ def t_loan():
     ok("204 幂等重放返回原流水 [规则]", OK(r2) and r2["data"].get("duplicate") is True)
     ok("204 幂等重放贷款余额不变 [金额]", abs(r2["data"]["loan"]["balance"] - r1["data"]["loan"]["balance"]) < 0.01)
     rq_settle = f"rq-settle-{uid()}"
-    rs = api("POST", "/api/loan/repay", L, json={"ident": bid, "mode": "SETTLE", "request_id": rq_settle})
-    ok("204 提前结清成功→PAID_OFF [正常流]", OK(rs) and rs["data"]["loan"]["status"] == C.LOAN_PAID_OFF)
+    # 金额 ≥ 结清试算额 → 自动按提前结清办理（不再需要显式 mode），且仅扣试算额
+    rs = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "999999", "request_id": rq_settle})
+    ok("204 大额自动提前结清→PAID_OFF [规则]", OK(rs) and rs["data"]["loan"]["status"] == C.LOAN_PAID_OFF)
+    ok("204 自动结清仅扣试算额(非填入金额) [金额]", OK(rs) and rs["data"]["txn"]["amount"] < 999999)
     ok("204 结清减免未到期利息 [规则]", sum(i["waived_interest"] for i in rs["data"]["loan"]["schedule"]) > 0)
-    rs2 = api("POST", "/api/loan/repay", L, json={"ident": bid, "mode": "SETTLE", "request_id": rq_settle})
+    rs2 = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "999999", "request_id": rq_settle})
     ok("204 结清后幂等重放仍返回原结果(非已结清报错) [规则]", OK(rs2) and rs2["data"].get("duplicate") is True)
     ok("204 已结清再还→E-NOLOAN [判定]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1"})) == "E-NOLOAN")
 

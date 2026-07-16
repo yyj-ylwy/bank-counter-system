@@ -277,12 +277,12 @@ def _acc_no(db, ln):
 def repay():
     d = _body()
     ident = (d.get("ident") or "").strip()
-    mode = (d.get("mode") or "NORMAL").strip().upper()  # NORMAL 按期/提前还款；SETTLE 一次性提前结清
     amount = D(d.get("amount") or 0)
     request_id = (d.get("request_id") or "").strip()  # 幂等键（选填）
-    if mode not in ("NORMAL", "SETTLE"):
-        return fail("E-OP", "还款方式非法（NORMAL/SETTLE）", 400)
-    if mode == "NORMAL" and amount <= 0:
+    _mode_raw = (d.get("mode") or "").strip().upper()  # 留空=自动判定；仍可传 NORMAL/SETTLE 显式指定
+    if _mode_raw not in ("", "NORMAL", "SETTLE"):
+        return fail("E-OP", "还款方式非法（留空自动判定，或 NORMAL/SETTLE）", 400)
+    if amount <= 0:
         return fail("E-AMT", "还款金额必须大于零", 400)
 
     db = get_db()
@@ -318,7 +318,9 @@ def repay():
             return None, ("E-3", "缺少逾期罚息参数，请管理员先维护 LOAN_OVERDUE_RATE")
         # 增量计提罚息（按期、日历日、水位不重不漏），罚息单列不并入本金
         penalty, new_asof = PenaltyCalculator.accrue(loan, raw_overdue_rate)
-        if mode == "SETTLE":  # 结清试算即应扣金额：罚息 + 到期未还利息 + 全部剩余本金
+        # 判定还款模式：传了 SETTLE 显式结清，传了 NORMAL 显式瀑布，留空自动判定
+        mode = _mode_raw or ("SETTLE" if amount >= settle_quote(loan, penalty) else "NORMAL")
+        if mode == "SETTLE":
             pay_amount, alloc = RepaymentAllocator.allocate_settle(loan["schedule"], penalty)
             if pay_amount <= 0:
                 return None, ("E-2", "该贷款已无应还款项")

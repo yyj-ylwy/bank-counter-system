@@ -295,10 +295,8 @@ const OPERATIONS = {
       code: 'UC-204', name: '还款登记', method: 'POST', path: '/api/loan/repay',
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号/合同号，任填其一' },
-        { n: 'mode', label: '还款方式', type: 'select', options: [{ value: 'NORMAL', label: '正常还款（罚息→利息→本金 逐期冲抵）' }, { value: 'SETTLE', label: '提前结清（减免未到期利息）' }] },
-        { n: 'amount', label: '还款金额', type: 'number', hint: '提前结清可留空，按试算金额自动扣款' },
+        { n: 'amount', label: '还款金额', type: 'number', required: true, hint: '金额不小于「提前结清应付」时自动按提前结清办理（减免未到期利息，仅扣试算额）' },
       ],
-      validate: v => (v.mode !== 'SETTLE' && !v.amount) ? '正常还款请填写还款金额' : null,
       result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余本金': money(d.loan.balance), '剩余利息': money(d.loan.interest_remaining || 0), '应收罚息': money(d.loan.penalty_due), '本次流水': d.txn ? d.txn.txn_no : '-' })
         + loanPlanSummary(d.loan)
         + (d.loan.schedule && d.loan.schedule.length ? '<h4>还款计划</h4>' + schedTable(d.loan.schedule) : ''),
