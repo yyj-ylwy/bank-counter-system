@@ -323,8 +323,9 @@ def t_loan():
     ok("204 瀑布先冲第1期利息 [规则]", lv2["schedule"][0]["interest_paid"] == lv2["schedule"][0]["interest_due"])
     ok("204 剩余本金=5万-已冲本金 [金额]", abs(lv2["balance"] - (50000.0 - sum(i["principal_paid"] for i in lv2["schedule"]))) < 0.01)
     rq = f"rq-repay-{uid()}"
-    r1 = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1000", "request_id": rq})
-    r2 = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1000", "request_id": rq})
+    r1 = api("POST", "/api/loan/repay", L, json={"ident": ln, "amount": "1000", "request_id": rq})  # 凭合同号还款
+    ok("204 凭合同号定位还款 [规则]", OK(r1))
+    r2 = api("POST", "/api/loan/repay", L, json={"ident": ln, "amount": "1000", "request_id": rq})
     ok("204 幂等重放返回原流水 [规则]", OK(r2) and r2["data"].get("duplicate") is True)
     ok("204 幂等重放贷款余额不变 [金额]", abs(r2["data"]["loan"]["balance"] - r1["data"]["loan"]["balance"]) < 0.01)
     rq_settle = f"rq-settle-{uid()}"

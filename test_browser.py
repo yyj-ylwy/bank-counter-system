@@ -291,6 +291,51 @@ async def run_all():
         r = await get_page_text(page)
         ok("储蓄", "S12", "更新地址+职业", check_text("客户信息更新成功", r), r[:80])
 
+        # S13: 挂失只进不出（挂失后存款放行、取款拦截）
+        await click_menu(page, "挂失/解挂/补卡")
+        await fill(page, "ident", "110101199001011234")
+        await fill(page, "op", "LOSS")
+        await submit(page)
+        await click_menu(page, "柜台存款")
+        await fill(page, "ident", "110101199001011234")
+        await fill(page, "amount", "50")
+        await submit(page)
+        r = await get_page_text(page)
+        ok("储蓄", "S13a", "挂失卡存款仍成功(只进不出)", check_text("存款成功", r), r[:80])
+        await click_menu(page, "柜台取款")
+        await fill(page, "ident", "110101199001011234")
+        await fill(page, "amount", "50")
+        await submit(page)
+        r = await get_page_text(page)
+        ok("储蓄", "S13b", "挂失卡取款被拦截", "挂失" in r and "取款成功" not in r, r[:80])
+        await click_menu(page, "挂失/解挂/补卡")
+        await fill(page, "ident", "110101199001011234")
+        await fill(page, "op", "UNLOSS")
+        await submit(page)
+
+        # S14: 当日冲正（UC-109）：存款→取流水号→冲正→重复冲正被拒
+        await click_menu(page, "柜台存款")
+        await fill(page, "ident", "110101199001011234")
+        await fill(page, "amount", "88")
+        await submit(page)
+        r = await get_page_text(page)
+        tn = re.search(r'T\d{12,16}', r)
+        txn_no = tn.group(0) if tn else ""
+        ok("储蓄", "S14a", f"存款并取得流水号({txn_no})", check_text("存款成功", r) and bool(txn_no), r[:80])
+        if txn_no:
+            await click_menu(page, "当日冲正")
+            await fill(page, "txn_no", txn_no)
+            await fill(page, "reason", "柜员误录金额")
+            await submit(page)
+            r = await get_page_text(page)
+            ok("储蓄", "S14b", "存款冲正成功", check_text("冲正成功", r), r[:100])
+            await click_menu(page, "当日冲正")
+            await fill(page, "txn_no", txn_no)
+            await fill(page, "reason", "再次冲正")
+            await submit(page)
+            r = await get_page_text(page)
+            ok("储蓄", "S14c", "重复冲正被拒", "已被冲正" in r or "不可重复" in r, r[:100])
+
         # ==================== 贷款业务 (6流) ====================
         print("\n📋 贷款业务 6 流")
 
@@ -312,7 +357,16 @@ async def run_all():
         ok("贷款", "L01", f"李四贷款申请", check_text("已提交", r) and bool(contract_no), r[:100])
 
         if contract_no:
-            # L02: 审批通过（审贷分离：申请人 L001 不得自审，切换 L002 复核）
+            # L02a: 审贷分离负例——申请经办人 L001 自审被拦截
+            await click_menu(page, "审核与审批")
+            await fill(page, "contract_no", contract_no)
+            await fill(page, "decision", "APPROVED")
+            await fill(page, "interest_rate", "0.045")
+            await submit(page)
+            r = await get_page_text(page)
+            ok("贷款", "L02a", "经办人自审被拦截(审贷分离)", "审贷分离" in r or "E-SOD" in r, r[:100])
+
+            # L02: 审批通过（切换 L002 复核）
             ensure_loan_clerk2()
             await login(page, "L002", "123456")
             await click_menu(page, "审核与审批")
@@ -321,33 +375,42 @@ async def run_all():
             await fill(page, "approved_amount", "50000")
             await fill(page, "interest_rate", "0.045")
             await fill(page, "term_months", "12")
+            await fill(page, "repay_method", "等额本息")
             await submit(page)
             r = await get_page_text(page)
-            ok("贷款", "L02", "审批通过(L002复核)", check_text(["审批完成","已批复"], r), r[:100])
+            ok("贷款", "L02", "审批通过(L002复核·双工号)", check_text(["审批完成","已批复"], r), r[:100])
 
-            # L03: 放款（切回 L001；审批人 L002 不得自放）
+            # L03a: 审贷分离负例——审批人 L002 放款被拦截
+            await click_menu(page, "放款处理")
+            await fill(page, "contract_no", contract_no)
+            await submit(page)
+            r = await get_page_text(page)
+            ok("贷款", "L03a", "审批人自放被拦截(审贷分离)", "审贷分离" in r or "E-SOD" in r, r[:100])
+
+            # L03: 放款（切回 L001），页面应渲染还款计划表
             await login(page, "L001", "123456")
             await click_menu(page, "放款处理")
             await fill(page, "contract_no", contract_no)
             await submit(page)
             r = await get_page_text(page)
-            ok("贷款", "L03", "放款", check_text("放款成功", r), r[:100])
+            ok("贷款", "L03", "放款成功", check_text("放款成功", r), r[:100])
+            ok("贷款", "L03b", "还款计划表渲染(12期等额本息)", check_text(["还款计划","期数","应还利息"], r), r[:120])
 
-            # L04: 用证件号还款
+            # L04: 还款（凭合同号定位，线上库客户可能有历史多笔贷款）
             await click_menu(page, "还款登记")
-            await fill(page, "ident", "110101199203054321")
+            await fill(page, "ident", contract_no)
             await fill(page, "amount", "10000")
             await submit(page)
             r = await get_page_text(page)
-            ok("贷款", "L04", "证件号还款10000", check_text("还款成功", r), r[:100])
+            ok("贷款", "L04", "还款10000(瀑布冲抵)", check_text("还款成功", r), r[:100])
 
-            # L05: 用邮箱还款
+            # L05: 提前结清（SETTLE：金额留空按试算扣款，减免未到期利息）
             await click_menu(page, "还款登记")
-            await fill(page, "ident", "lisi@example.com")
-            await fill(page, "amount", "10000")
+            await fill(page, "ident", contract_no)
+            await fill(page, "mode", "SETTLE")
             await submit(page)
             r = await get_page_text(page)
-            ok("贷款", "L05", "邮箱还款10000", check_text("还款成功", r), r[:100])
+            ok("贷款", "L05", "提前结清(减免未到期利息)", check_text("已结清", r), r[:120])
 
             # L06: 逾期查询
             await click_menu(page, "逾期查询")

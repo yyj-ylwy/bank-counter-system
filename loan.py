@@ -10,7 +10,7 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, dec, m, now, as_int,
-    find_customer, resolve_loan, resolve_account_no, write_audit,
+    find_customer, resolve_loan, write_audit,
     get_param, get_param_dec, customer_view, txn_view, parse_date_range, new_contract_no,
 )
 from bankcore import AccountGuard, SavingsAccount, IdempotencyGuard, TxnRecorder, CREDIT, DEBIT
@@ -291,9 +291,13 @@ def repay():
     if rerr:
         return fail(rerr[0], rerr[1])
     contract_no = ln["contract_no"]
-    repay_no, _c, aerr = resolve_account_no(db, ident)  # 凭任意身份标识定位还款储蓄账户
-    if aerr:
-        return fail(aerr[0], aerr[1])
+    # 扣款账户按贷款客户定位（客户↔账户 1:1），而非再用 ident 反查——
+    # ident 可能是合同号（可定位贷款但定位不了客户），与 UI"合同号任填其一"的口径保持一致
+    acc0 = db.account.find_one({"customer_id": ln["customer_id"],
+                                "status": {"$ne": C.ACCOUNT_CLOSED}})
+    if not acc0:
+        return fail("E-NOACC", "该贷款客户名下无可用储蓄账户")
+    repay_no = acc0["account_no"]
     # 逾期罚息日利率（可能未维护）：仅在贷款确实逾期时才要求存在，避免正常还款被参数缺失阻断
     raw_overdue_rate = get_param(db, C.P_LOAN_OVERDUE_RATE)
 
