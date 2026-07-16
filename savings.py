@@ -1,4 +1,8 @@
-"""储蓄业务子系统 UC-101 ~ UC-108（参与者：储蓄业务员）。"""
+"""储蓄业务子系统 UC-101 ~ UC-109（参与者：储蓄业务员）。
+
+路由层：解析/校验请求 → 调 bankcore 领域层（方向感知校验、原子记账、
+当日支出限额、幂等、冲正）→ 事务内持久化 → 序列化响应。
+"""
 from flask import Blueprint, request, g
 from pymongo.errors import DuplicateKeyError
 
@@ -8,9 +12,13 @@ from auth import require_role
 from common import (
     ok, fail, D, dec, m, oid, now,
     validate_id_no, validate_phone, validate_email, norm_id, check_identity, match_identity,
-    find_customer, resolve_account_no, check_account, write_txn, write_audit,
+    find_customer, resolve_account_no, write_txn, write_audit,
     get_param_dec, customer_view, account_view, txn_view, parse_date_range,
     new_customer_no, new_account_no, new_debit_card_no,
+)
+from bankcore import (
+    AccountGuard, SavingsAccount, DailyDebitPolicy, IdempotencyGuard,
+    TxnRecorder, ReversalService, CREDIT, DEBIT,
 )
 
 bp = Blueprint("savings", __name__, url_prefix="/api/savings")
@@ -20,6 +28,13 @@ clerk = require_role(C.ROLE_SAVINGS)
 def _body():
     b = request.get_json(force=True, silent=True)
     return b if isinstance(b, dict) else {}  # 非对象体当空，避免 .get 崩 500
+
+
+def _dup_response(db, txn_doc):
+    """幂等命中：返回原流水与当前余额，不再次记账。"""
+    acc = db.account.find_one({"_id": txn_doc["account_id"]})
+    return ok({"balance": float(dec(acc["balance"])) if acc else None,
+               "txn": txn_view(txn_doc), "duplicate": True}, "重复请求，返回原交易结果")
 
 
 # ---------- UC-101 客户信息登记与开户注册 ----------
@@ -100,6 +115,7 @@ def deposit():
     d = _body()
     ident = (d.get("ident") or "").strip()
     amount = D(d.get("amount") or 0)
+    request_id = (d.get("request_id") or "").strip()  # 幂等键（选填）
     if amount <= 0 or amount > C.TXN_AMOUNT_MAX:  # E-2
         return fail("E-2", f"存款金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}")
 
@@ -109,44 +125,41 @@ def deposit():
         return fail(rerr[0], rerr[1])
 
     def txn(s):
-        acc, err = check_account(db, account_no, session=s)  # E-1 状态异常
+        dup = IdempotencyGuard.find_existing(db, request_id, C.TXN_DEPOSIT, s)  # 幂等：重放不重复入账
+        if dup:
+            return ("DUP", dup), None
+        # 存款为入金：挂失账户放行（只进不出），冻结/销户拦截
+        acc, err = AccountGuard.check(db, account_no, direction=CREDIT, session=s)
         if err:
             return None, err
-        new_bal = dec(acc["balance"]) + amount
-        db.account.update_one({"_id": acc["_id"]}, {"$set": {"balance": m(new_bal)}}, session=s)
-        t = write_txn(db, business_type=C.TXN_DEPOSIT, amount=amount, user_id=g.user["_id"],
-                      customer_id=acc["customer_id"], account_id=acc["_id"], session=s)
+        book = SavingsAccount(db, acc, s)
+        book.credit(amount)  # 原子 $inc
+        t = TxnRecorder.record(db, business_type=C.TXN_DEPOSIT, amount=amount,
+                               user_id=g.user["_id"], customer_id=acc["customer_id"],
+                               account_id=acc["_id"], request_id=request_id, session=s)
         write_audit(db, user_id=g.user["_id"], action=C.TXN_DEPOSIT, object_type="account",
                     object_id=account_no, result=C.RESULT_SUCCESS,
                     detail={"amount": str(amount)}, session=s)
-        acc["balance"] = m(new_bal)
-        return (acc, t), None
+        return (book, t), None
 
     res, err = run_in_transaction(txn)
     if err:
         return fail(err[0], err[1])
-    acc, t = res
-    return ok({"balance": float(dec(acc["balance"])), "txn": txn_view(t)}, "存款成功")
+    tag, payload = res
+    if tag == "DUP":
+        return _dup_response(db, payload)
+    book, t = res
+    return ok({"balance": float(book.balance), "txn": txn_view(t)}, "存款成功")
 
 
 # ---------- UC-103 柜台取款 ----------
-def _today_withdrawn(db, account_id, session=None):
-    start = now().replace(hour=0, minute=0, second=0, microsecond=0)
-    total = D(0)
-    cur = db.business_transaction.find(
-        {"account_id": account_id, "business_type": C.TXN_WITHDRAW,
-         "status": C.TXN_STATUS_SUCCESS, "txn_time": {"$gte": start}}, session=session)
-    for t in cur:
-        total += dec(t["amount"])
-    return total
-
-
 @bp.post("/withdraw")
 @clerk
 def withdraw():
     d = _body()
     ident = (d.get("ident") or "").strip()
     amount = D(d.get("amount") or 0)
+    request_id = (d.get("request_id") or "").strip()
     if amount <= 0 or amount > C.TXN_AMOUNT_MAX:
         return fail("E-AMT", f"取款金额须大于 0 且不超过 {C.TXN_AMOUNT_MAX:,}", 400)
 
@@ -154,29 +167,37 @@ def withdraw():
     account_no, _cust, rerr = resolve_account_no(db, ident)  # 凭任意身份标识定位账户
     if rerr:
         return fail(rerr[0], rerr[1])
-    limit = get_param_dec(db, C.P_WITHDRAW_DAILY_LIMIT, "50000")
 
     def txn(s):
-        acc, err = check_account(db, account_no, need_amount=amount, session=s)  # E-1余额/E-3状态
-        if err:
+        dup = IdempotencyGuard.find_existing(db, request_id, C.TXN_WITHDRAW, s)  # 幂等：重放不重复扣款
+        if dup:
+            return ("DUP", dup), None
+        acc, err = AccountGuard.check(db, account_no, direction=DEBIT, need_amount=amount, session=s)
+        if err:  # E-1余额/E-3状态（错误码沿用 check_account 口径）
             return None, err
-        if _today_withdrawn(db, acc["_id"], s) + amount > limit:  # E-2 当日限额
-            return None, ("E-2", f"超过当日取款限额 {limit}")
-        new_bal = dec(acc["balance"]) - amount
-        db.account.update_one({"_id": acc["_id"]}, {"$set": {"balance": m(new_bal)}}, session=s)
-        t = write_txn(db, business_type=C.TXN_WITHDRAW, amount=amount, user_id=g.user["_id"],
-                      customer_id=acc["customer_id"], account_id=acc["_id"], session=s)
+        lerr = DailyDebitPolicy.check(db, acc["_id"], amount, s)  # E-2 当日支出限额（取款+转账合并）
+        if lerr:
+            return None, lerr
+        book = SavingsAccount(db, acc, s)
+        derr = book.debit(amount)  # 条件原子扣款：状态+卡态+余额三条件命中才扣
+        if derr:
+            return None, derr
+        t = TxnRecorder.record(db, business_type=C.TXN_WITHDRAW, amount=amount,
+                               user_id=g.user["_id"], customer_id=acc["customer_id"],
+                               account_id=acc["_id"], request_id=request_id, session=s)
         write_audit(db, user_id=g.user["_id"], action=C.TXN_WITHDRAW, object_type="account",
                     object_id=account_no, result=C.RESULT_SUCCESS,
                     detail={"amount": str(amount)}, session=s)
-        acc["balance"] = m(new_bal)
-        return (acc, t), None
+        return (book, t), None
 
     res, err = run_in_transaction(txn)
     if err:
         return fail(err[0], err[1])
-    acc, t = res
-    return ok({"balance": float(dec(acc["balance"])), "txn": txn_view(t)}, "取款成功")
+    tag, payload = res
+    if tag == "DUP":
+        return _dup_response(db, payload)
+    book, t = res
+    return ok({"balance": float(book.balance), "txn": txn_view(t)}, "取款成功")
 
 
 # ---------- UC-104 转账汇款（含 UC-10401 行内 / 10402 跨行 / 10403 同户）----------
@@ -190,6 +211,7 @@ def transfer():
     to_bank = (d.get("to_bank") or "").strip()
     ident = (d.get("ident") or "").strip()  # 转出方身份标识
     amount = D(d.get("amount") or 0)
+    request_id = (d.get("request_id") or "").strip()
 
     if ttype not in ("INTRA", "INTER"):  # 转账类型必须合法，避免非法值被静默当跨行
         return fail("E-OP", "转账类型非法（本行/跨行）", 400)
@@ -213,22 +235,31 @@ def transfer():
     fee_rate = get_param_dec(db, C.P_TRANSFER_FEE_RATE, "0.001")
 
     def txn(s):
+        dup = IdempotencyGuard.find_existing(db, request_id, C.TXN_TRANSFER_OUT, s)  # 幂等
+        if dup:
+            return ("DUP", dup), None
         fee = D(amount * fee_rate) if ttype == "INTER" else D(0)
-        src, err = check_account(db, from_no, need_amount=amount + fee, session=s)  # E-2 余额
+        src, err = AccountGuard.check(db, from_no, direction=DEBIT,
+                                      need_amount=amount + fee, session=s)  # E-2 余额
         if err:
             return None, err
+        lerr = DailyDebitPolicy.check(db, src["_id"], amount + fee, s)  # 转账同样占用当日支出限额
+        if lerr:
+            return None, lerr
+        src_book = SavingsAccount(db, src, s)
 
         if ttype == "INTRA":
-            dst, derr = check_account(db, to_no, session=s)  # E-1 转入账户异常
+            # 收款为入金方向：挂失账户可入（只进不出），冻结/销户拦截
+            dst, derr = AccountGuard.check(db, to_no, direction=CREDIT, session=s)
             if derr:
                 return None, ("E-1", f"转入账户不可用：{derr[1]}")
-            # 扣转出、加转入
-            db.account.update_one({"_id": src["_id"]},
-                                  {"$set": {"balance": m(dec(src["balance"]) - amount)}}, session=s)
-            db.account.update_one({"_id": dst["_id"]},
-                                  {"$set": {"balance": m(dec(dst["balance"]) + amount)}}, session=s)
-            t_out = write_txn(db, business_type=C.TXN_TRANSFER_OUT, amount=amount, user_id=g.user["_id"],
-                              customer_id=src["customer_id"], account_id=src["_id"], session=s)
+            werr = src_book.debit(amount)  # 条件原子：扣转出
+            if werr:
+                return None, werr
+            SavingsAccount(db, dst, s).credit(amount)  # 加转入
+            t_out = TxnRecorder.record(db, business_type=C.TXN_TRANSFER_OUT, amount=amount,
+                                       user_id=g.user["_id"], customer_id=src["customer_id"],
+                                       account_id=src["_id"], request_id=request_id, session=s)
             t_in = write_txn(db, business_type=C.TXN_TRANSFER_IN, amount=amount, user_id=g.user["_id"],
                              customer_id=dst["customer_id"], account_id=dst["_id"],
                              related_id=t_out["_id"], session=s)
@@ -240,14 +271,16 @@ def transfer():
                         detail={"type": "同户" if same_owner else "行内", "to": to_no,
                                 "amount": str(amount)}, session=s)
             return {"fee": 0.0, "sub": "同户转账" if same_owner else "行内转账",
-                    "balance": float(dec(src["balance"]) - amount), "txn": txn_view(t_out)}, None
+                    "balance": float(src_book.balance), "txn": txn_view(t_out)}, None
         else:  # INTER 跨行：只扣转出方 + 手续费，不更新系统外收款账户
             if not to_no or not to_bank:  # E-1 收款信息不合法
                 return None, ("E-1", "跨行转账需填写收款行和收款账号")
-            db.account.update_one({"_id": src["_id"]},
-                                  {"$set": {"balance": m(dec(src["balance"]) - amount - fee)}}, session=s)
-            t_out = write_txn(db, business_type=C.TXN_TRANSFER_OUT, amount=amount, user_id=g.user["_id"],
-                              customer_id=src["customer_id"], account_id=src["_id"], session=s)
+            werr = src_book.debit(amount + fee)
+            if werr:
+                return None, werr
+            t_out = TxnRecorder.record(db, business_type=C.TXN_TRANSFER_OUT, amount=amount,
+                                       user_id=g.user["_id"], customer_id=src["customer_id"],
+                                       account_id=src["_id"], request_id=request_id, session=s)
             if fee > 0:
                 write_txn(db, business_type=C.TXN_TRANSFER_FEE, amount=fee, user_id=g.user["_id"],
                           customer_id=src["customer_id"], account_id=src["_id"],
@@ -257,12 +290,40 @@ def transfer():
                         detail={"type": "跨行", "to_bank": to_bank, "to": to_no,
                                 "amount": str(amount), "fee": str(fee)}, session=s)
             return {"fee": float(fee), "sub": "跨行转账（登记汇出，不代表真实到账）",
-                    "balance": float(dec(src["balance"]) - amount - fee), "txn": txn_view(t_out)}, None
+                    "balance": float(src_book.balance), "txn": txn_view(t_out)}, None
 
     res, err = run_in_transaction(txn)
     if err:
         return fail(err[0], err[1])
+    if isinstance(res, tuple) and res[0] == "DUP":
+        return _dup_response(db, res[1])
     return ok(res, "转账成功")
+
+
+# ---------- UC-109 当日冲正 ----------
+@bp.post("/reverse")
+@clerk
+def reverse():
+    """柜员错账纠正：当日成功流水整体冲正（转账含转入/手续费腿），资金反向 + 红字流水留痕。"""
+    d = _body()
+    txn_no = (d.get("txn_no") or "").strip()
+    reason = (d.get("reason") or "").strip()
+    if not txn_no:
+        return fail("E-REQ", "请填写要冲正的流水号", 400)
+    if not reason:
+        return fail("E-REQ", "冲正必须填写原因（供审计追溯）", 400)
+    db = get_db()
+
+    def txn(s):
+        return ReversalService.reverse(db, txn_no, reason, g.user["_id"], s)
+
+    res, err = run_in_transaction(txn)
+    if err:
+        return fail(err[0], err[1])
+    write_audit(db, user_id=g.user["_id"], action="REVERSAL", object_type="transaction",
+                object_id=txn_no, result=C.RESULT_SUCCESS,
+                detail={"reason": reason, "legs": res["legs_reversed"]})
+    return ok(res, f"冲正成功，共反向 {res['legs_reversed']} 条流水")
 
 
 # ---------- UC-105 账户/明细查询 ----------
@@ -302,7 +363,8 @@ def query():
     return ok({
         "customer": customer_view(cust),
         "account": view,
-        "transactions": [txn_view(t) for t in txns],
+        # 流水视图追加冲正标记（additive，不改 txn_view 共享实现）
+        "transactions": [{**txn_view(t), "reversed": bool(t.get("reversed"))} for t in txns],
         "empty_hint": None if txns else "该时段无明细流水",  # E-3
     })
 
@@ -325,7 +387,8 @@ def card_op():
     if op == "LOSS":
         if cur == C.CARD_LOST:  # E-2
             return fail("E-2", "卡片已处于挂失状态，无需重复操作")
-        updates, new_card, msg = {"card_status": C.CARD_LOST}, acc["card_no"], "挂失成功，已限制交易"
+        updates, new_card, msg = {"card_status": C.CARD_LOST}, acc["card_no"], \
+            "挂失成功，已限制支取（存款/转入不受影响）"
     elif op == "UNLOSS":
         if cur != C.CARD_LOST:  # E-2
             return fail("E-2", "卡片未处于挂失状态，无需解挂")
@@ -392,21 +455,23 @@ def close_account():
         return fail("E-5", f"账户仍有余额 {dec(acc['balance'])}，请先取款或转账清零")
 
     def txn(s):
-        a = db.account.find_one({"_id": acc["_id"]}, session=s)  # 事务内重读，防并发下带余额销户
-        if a["status"] != C.ACCOUNT_NORMAL:
-            return ("E-4", f"账户当前为「{C.ACCOUNT_STATUS_LABEL.get(a['status'])}」，不可销户")
-        if dec(a["balance"]) > 0:
+        # 销户 CAS：状态正常 + 余额为 0 同时命中才置销户，天然防"并发窗口内又入了一笔钱"
+        res = db.account.update_one(
+            {"_id": acc["_id"], "status": C.ACCOUNT_NORMAL, "balance": m(0)},
+            {"$set": {"status": C.ACCOUNT_CLOSED, "card_status": C.CARD_INVALID}}, session=s)
+        if res.matched_count == 0:
+            a = db.account.find_one({"_id": acc["_id"]}, session=s)
+            if a["status"] != C.ACCOUNT_NORMAL:
+                return ("E-4", f"账户当前为「{C.ACCOUNT_STATUS_LABEL.get(a['status'])}」，不可销户")
             return ("E-5", f"账户仍有余额 {dec(a['balance'])}，请先取款或转账清零")
         if db.loan.count_documents({"customer_id": cust["_id"],
                 "status": {"$in": [C.LOAN_PENDING, C.LOAN_APPROVED, C.LOAN_ACTIVE, C.LOAN_OVERDUE]}}, session=s):
-            return ("E-2", "该客户存在未结清贷款，请先结清后再销户")
+            return ("E-2", "该客户存在未结清贷款，请先结清后再销户")  # 事务内复查，整体回滚保护
         if db.fx_account.count_documents({"customer_id": cust["_id"],
                 "status": {"$in": [C.FX_NORMAL, C.FX_FROZEN]}}, session=s):
             return ("E-3", "该客户存在未关闭的外汇子户，请先关闭")
-        db.account.update_one({"_id": a["_id"]},
-                              {"$set": {"status": C.ACCOUNT_CLOSED, "card_status": C.CARD_INVALID}}, session=s)
         write_txn(db, business_type=C.TXN_CLOSE_ACCOUNT, amount=0, user_id=g.user["_id"],
-                  customer_id=cust["_id"], account_id=a["_id"], session=s)
+                  customer_id=cust["_id"], account_id=acc["_id"], session=s)
         write_audit(db, user_id=g.user["_id"], action=C.TXN_CLOSE_ACCOUNT, object_type="account",
                     object_id=account_no, result=C.RESULT_SUCCESS, session=s)
         return None

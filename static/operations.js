@@ -101,6 +101,40 @@ function txnTable(list) {
   ]);
 }
 
+// 储蓄明细表：比通用 txnTable 多一列冲正标记（红字流水类型显示 REVERSAL/冲正）
+function savTxnTable(list) {
+  return tbl(list, [
+    { k: 'txn_no', label: '流水号' },
+    { k: 'business_label', label: '类型', fmt: v => v === 'REVERSAL' ? '冲正' : v },
+    { k: 'amount', label: '金额', fmt: money },
+    { k: 'status_label', label: '状态' },
+    { k: 'reversed', label: '冲正标记', fmt: v => v ? '已被冲正' : '' },
+    { k: 'txn_time', label: '时间' },
+  ]);
+}
+
+// 贷款还款计划表（loan.schedule）
+function schedTable(list) {
+  return tbl(list, [
+    { k: 'period', label: '期数' },
+    { k: 'due_date', label: '到期日' },
+    { k: 'principal_due', label: '应还本金', fmt: money },
+    { k: 'interest_due', label: '应还利息', fmt: money },
+    { k: 'principal_paid', label: '已还本金', fmt: money },
+    { k: 'interest_paid', label: '已还利息', fmt: money },
+    { k: 'status', label: '状态', fmt: v => v === 'PAID' ? '已结清' : '未结清' },
+  ]);
+}
+
+// 贷款计划摘要：下一期应还 / 剩余利息 / 提前结清试算（字段缺失时自动省略）
+function loanPlanSummary(l) {
+  const rows = {};
+  if (l.next_due) rows['下一期应还'] = `第${l.next_due.period}期 ${l.next_due.due_date} · ` + money(l.next_due.amount);
+  if (l.interest_remaining != null) rows['剩余利息'] = money(l.interest_remaining);
+  if (l.settle_amount != null) rows['提前结清应付'] = money(l.settle_amount);
+  return Object.keys(rows).length ? kv(rows) : '';
+}
+
 const OPERATIONS = {
   // ================= 储蓄业务员 =================
   SAVINGS_CLERK: [
@@ -148,7 +182,7 @@ const OPERATIONS = {
       hint: '按任意身份标识查询',
       result: d => kv({ '客户': d.customer.name + ' (' + d.customer.customer_no + ')', '账号': d.account.account_no, '余额': money(d.account.balance), '账户状态': d.account.status_label, '卡状态': d.account.card_status_label })
         + (d.account.note ? `<p class="hint">${d.account.note}</p>` : '')
-        + '<h4>交易明细</h4>' + (d.transactions.length ? txnTable(d.transactions) : `<p class="hint">${d.empty_hint || '无明细'}</p>`),
+        + '<h4>交易明细</h4>' + (d.transactions.length ? savTxnTable(d.transactions) : `<p class="hint">${d.empty_hint || '无明细'}</p>`),
     },
     {
       code: 'UC-106', name: '挂失/解挂/补卡', method: 'POST', path: '/api/savings/card',
@@ -171,6 +205,16 @@ const OPERATIONS = {
         { n: 'confirm', label: '二次确认关键信息变更', type: 'checkbox' }, { n: 'reason', label: '变更原因' },
       ],
       result: d => '<h4>客户信息（更新后）</h4>' + kv({ '客户号': d.customer.customer_no, '姓名': d.customer.name, '证件类型': d.customer.id_type || '-', '证件号': d.customer.id_no, '邮箱': d.customer.email || '-', '手机号': d.customer.phone || '-', '联系地址': d.customer.address || '-', '职业': d.customer.occupation || '-', '客户状态': d.customer.status_label }),
+    },
+    {
+      code: 'UC-109', name: '当日冲正', method: 'POST', path: '/api/savings/reverse',
+      hint: '柜员错账纠正：仅限当日成功流水；转账冲正自动连带转入/手续费腿一并反向',
+      fields: [
+        { n: 'txn_no', label: '流水号', required: true, hint: '存款/取款/转账（转出）流水号，可在 UC-105 明细中查到' },
+        { n: 'reason', label: '冲正原因', required: true, hint: '必填，供审计追溯' },
+      ],
+      result: d => kv({ '被冲流水': d.reversed_txn_no, '反向笔数': d.legs_reversed, '冲正后余额': money(d.balance) })
+        + '<h4>红字流水</h4>' + savTxnTable(d.reversals),
     },
   ],
 
@@ -196,12 +240,12 @@ const OPERATIONS = {
         { n: 'approved_amount', label: '批准金额', type: 'number', hint: '仅通过时填写' },
         { n: 'interest_rate', label: '年利率', type: 'number', hint: '仅通过时填；小数如 0.0435=4.35%，留空用系统默认' },
         { n: 'term_months', label: '期限（月）', type: 'number', hint: '仅通过时填' },
-        { n: 'repay_method', label: '还款方式', type: 'select', options: [{ value: '', label: '默认（等额本息）' }, '等额本息', '等额本金', '先息后本', '一次性还本付息'] },
+        { n: 'repay_method', label: '还款方式', type: 'select', options: [{ value: '', label: '默认（等额本息）' }, '等额本息', '等额本金', '一次性还本付息'], hint: '决定放款时生成的还款计划' },
         { n: 'reason', label: '拒绝/补件原因', hint: '仅拒绝或待补件时填写' },
       ],
       result: d => {
         const l = d.loan, base = { '合同号': l.contract_no, '状态': l.status_label };
-        if (l.status === 'APPROVED') { base['批准金额'] = money(l.amount); base['年利率'] = pct(l.interest_rate); base['还款方式'] = l.repay_method || '-'; }
+        if (l.status === 'APPROVED') { base['批准金额'] = money(l.amount); base['年利率'] = pct(l.interest_rate); base['还款方式'] = l.repay_method || '-'; base['审批人'] = l.approved_by_no || '-'; }
         else if (l.status === 'REJECTED') base['拒绝原因'] = l.reject_reason || '-';
         else if (l.status === 'SUPPLEMENT') base['补件说明'] = l.supplement_note || '-';
         return kv(base);
@@ -210,19 +254,29 @@ const OPERATIONS = {
     {
       code: 'UC-203', name: '放款处理', method: 'POST', path: '/api/loan/disburse',
       fields: [{ n: 'contract_no', label: '合同号', required: true }],
-      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '应还余额': money(d.loan.balance), '到期日': d.loan.due_date }),
+      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余本金': money(d.loan.balance), '还款方式': d.loan.repay_method || '-', '到期日': d.loan.due_date, '放款人': d.loan.disbursed_by_no || '-' })
+        + loanPlanSummary(d.loan)
+        + (d.loan.schedule && d.loan.schedule.length ? '<h4>还款计划</h4>' + schedTable(d.loan.schedule) : ''),
     },
     {
       code: 'UC-204', name: '还款登记', method: 'POST', path: '/api/loan/repay',
-      fields: [{ n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号/合同号，任填其一' }, { n: 'amount', label: '还款金额', type: 'number', required: true }],
-      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余本金': money(d.loan.balance), '应收罚息': money(d.loan.penalty_due) }),
+      fields: [
+        { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号/合同号，任填其一' },
+        { n: 'mode', label: '还款方式', type: 'select', options: [{ value: 'NORMAL', label: '正常还款（罚息→利息→本金 逐期冲抵）' }, { value: 'SETTLE', label: '提前结清（减免未到期利息）' }] },
+        { n: 'amount', label: '还款金额', type: 'number', hint: '提前结清可留空，按试算金额自动扣款' },
+      ],
+      validate: v => (v.mode !== 'SETTLE' && !v.amount) ? '正常还款请填写还款金额' : null,
+      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余本金': money(d.loan.balance), '剩余利息': money(d.loan.interest_remaining || 0), '应收罚息': money(d.loan.penalty_due), '本次流水': d.txn ? d.txn.txn_no : '-' })
+        + loanPlanSummary(d.loan)
+        + (d.loan.schedule && d.loan.schedule.length ? '<h4>还款计划</h4>' + schedTable(d.loan.schedule) : ''),
     },
     {
       code: 'UC-205', name: '逾期查询', method: 'GET', path: '/api/loan/overdue',
       fields: [{ n: 'days', label: '逾期天数不少于', type: 'number', hint: '留空查全部逾期' }, { n: 'ident', label: '身份标识', hint: '证件号/邮箱/手机号/账号/合同号，留空查全部' }],
       result: d => d.loans.length ? tbl(d.loans, [
         { k: 'contract_no', label: '合同号' }, { k: 'balance', label: '剩余应还', fmt: money },
-        { k: 'overdue_days', label: '逾期天数' }, { k: 'penalty', label: '罚息', fmt: money }, { k: 'status_label', label: '状态' },
+        { k: 'overdue_period', label: '逾期期数' }, { k: 'overdue_days', label: '逾期天数' },
+        { k: 'penalty', label: '罚息', fmt: money }, { k: 'status_label', label: '状态' },
       ]) : `<p class="hint">${d.hint || '无逾期贷款'}</p>`,
     },
     {
