@@ -9,7 +9,9 @@ import os
 os.environ.setdefault("DB_NAME", "bank_invest_test")
 
 from app import create_app
-from db import get_client
+from db import get_client, get_db
+from common import now
+from datetime import timedelta
 
 app = create_app()
 cl = app.test_client()
@@ -102,6 +104,53 @@ def run():
     api("POST", "/api/invest/assess", INV, json={"ident": c2["id_no"], "q1": "2", "q2": "2", "q3": "2", "q4": "2", "q5": "2"})
     ok("605 风险不匹配(2级买5级股票)→E-RISK [条件]", E(api("POST", "/api/invest/buy", INV, json={"ident": c2["id_no"], "product_code": "AAPL", "amount": "1440"})) == "E-RISK")
     ok("605 风险匹配(2级买1级货基)成功 [条件]", OK(api("POST", "/api/invest/buy", INV, json={"ident": c2["id_no"], "product_code": "000198", "amount": "1000"})))
+
+    # ===== 七件套：更贴近真实系统 =====
+    dbx = get_db()
+
+    # ① 测评有效期 12 个月：把测评时间改到 400 天前 → 申购被拦；重测后恢复
+    ce = open_acct(bal="5000")
+    api("POST", "/api/invest/assess", INV, json={"ident": ce["id_no"], "q1": "3", "q2": "3", "q3": "3", "q4": "3", "q5": "3"})
+    dbx.customer.update_one({"id_no": ce["id_no"]}, {"$set": {"invest_risk_at": now() - timedelta(days=400)}})
+    ok("605 测评过期(>365天)→E-RISK [判定]", E(api("POST", "/api/invest/buy", INV, json={"ident": ce["id_no"], "product_code": "110020", "amount": "100"})) == "E-RISK")
+    api("POST", "/api/invest/assess", INV, json={"ident": ce["id_no"], "q1": "3", "q2": "3", "q3": "3", "q4": "3", "q5": "3"})
+    ok("605 重新测评后可申购 [正常流]", OK(api("POST", "/api/invest/buy", INV, json={"ident": ce["id_no"], "product_code": "110020", "amount": "100"})))
+
+    # ② 风险不匹配确认书：C4 买 R5(超1级)需签确认书；C1 硬禁止
+    c4 = open_acct(bal="5000")
+    api("POST", "/api/invest/assess", INV, json={"ident": c4["id_no"], "q1": "4", "q2": "4", "q3": "4", "q4": "4", "q5": "4"})  # C4
+    ok("605 超1级未签确认书→E-RISK [判定]", E(api("POST", "/api/invest/buy", INV, json={"ident": c4["id_no"], "product_code": "AAPL", "amount": "1440"})) == "E-RISK")
+    ok("605 超1级签确认书→成功 [组合]", OK(api("POST", "/api/invest/buy", INV, json={"ident": c4["id_no"], "product_code": "AAPL", "amount": "1440", "mismatch_confirmed": True})))
+    c1 = open_acct(bal="5000")
+    api("POST", "/api/invest/assess", INV, json={"ident": c1["id_no"], "q1": "1", "q2": "1", "q3": "1", "q4": "1", "q5": "1"})  # C1
+    ok("605 C1客户买高风险即使签确认书也禁止→E-RISK [边界]", E(api("POST", "/api/invest/buy", INV, json={"ident": c1["id_no"], "product_code": "110020", "amount": "100", "mismatch_confirmed": True})) == "E-RISK")
+
+    # ③ 货币基金：申购免费 + T+0 快速赎回 + 单日限额 + 非货基不可快赎
+    cm = open_acct(bal="30000")
+    api("POST", "/api/invest/assess", INV, json={"ident": cm["id_no"], "q1": "3", "q2": "3", "q3": "3", "q4": "3", "q5": "3"})
+    bm = api("POST", "/api/invest/buy", INV, json={"ident": cm["id_no"], "product_code": "000198", "amount": "20000"})
+    ok("605 货币基金申购免申购费 [条件]", OK(bm) and abs(bm["data"]["fee"]) < 0.001)
+    sf = api("POST", "/api/invest/sell", INV, json={"ident": cm["id_no"], "product_code": "000198", "units": "5000", "fast": True})
+    ok("606 货基快速赎回T+0免赎回费 [组合]", OK(sf) and abs(sf["data"]["fee"]) < 0.001 and "T+0" in (sf["data"].get("settle_status") or ""))
+    ok("606 货基快赎超1万→E-LIMIT [边界]", E(api("POST", "/api/invest/sell", INV, json={"ident": cm["id_no"], "product_code": "000198", "units": "15000", "fast": True})) == "E-LIMIT")
+    api("POST", "/api/invest/buy", INV, json={"ident": cm["id_no"], "product_code": "110020", "amount": "1000"})
+    ok("606 非货基用快速赎回→E-REQ [判定]", E(api("POST", "/api/invest/sell", INV, json={"ident": cm["id_no"], "product_code": "110020", "units": "1", "fast": True})) == "E-REQ")
+
+    # ④ 份额确认 / 资金到账 T+1 状态流转（把确认日改到昨天再批量确认）
+    bc = api("POST", "/api/invest/buy", INV, json={"ident": cm["id_no"], "product_code": "110020", "amount": "500"})
+    ok("605 申购返回成交确认单号 [判定]", bc["data"].get("confirm_no") and bc["data"]["confirm_no"] == bc["data"].get("txn_no"))
+    dbx.business_transaction.update_one({"txn_no": bc["data"]["confirm_no"]}, {"$set": {"confirm_date": (now() - timedelta(days=1)).strftime("%Y-%m-%d")}})
+    cs = api("POST", "/api/invest/confirm-settlements", INV)
+    ok("609 到期申购单被确认份额 [正常流]", OK(cs) and cs["data"]["confirmed"] >= 1)
+    tt = dbx.business_transaction.find_one({"txn_no": bc["data"]["confirm_no"]})
+    ok("609 确认后状态=份额已确认 [判定]", tt and tt.get("settle_status") == "份额已确认")
+
+    # ⑤ 费率与披露字段：货基标志、管理费/托管费/投资范围
+    pl = api("GET", "/api/invest/products", INV)
+    p198 = next((x for x in pl["data"]["products"] if x["code"] == "000198"), None)
+    ok("601 货币基金标志 is_money_fund [判定]", p198 and p198.get("is_money_fund") is True)
+    qd = api("GET", "/api/invest/quote", INV, query={"product_code": "000001"})
+    ok("602 行情含管理费/投资范围披露 [组合]", OK(qd) and qd["data"].get("mgmt_fee") and qd["data"].get("scope"))
 
     # 权限：储蓄员不能调理财申购（角色隔离）
     ok("权限 储蓄员调申购→403 [安全]", cl.post("/api/invest/buy", headers={"Authorization": "Bearer " + S}, json={"ident": c["id_no"], "product_code": "000198", "amount": "1"}).status_code == 403)

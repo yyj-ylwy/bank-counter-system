@@ -7,8 +7,13 @@ load_dotenv()  # 本地读取 .env；Render 上直接用环境变量，这行无
 MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "bank_counter")
 
-# 令牌签名密钥：绝不回退到公开已知的固定默认值（否则可被离线伪造任意用户令牌）。
-# 未配置时随机生成一个（安全但令牌不跨重启存活）——生产务必在环境变量里配置固定值。
+# 令牌签名密钥：用于给登录令牌签名/验签（见 auth.py，itsdangerous 用它签发 Bearer 令牌）。
+# 谁掌握这把密钥，谁就能伪造出"看起来合法"的任意用户令牌，因此取值有两条铁律：
+#   1) 绝不回退到写死在源码里的固定默认值——代码一旦开源，默认值人人可见，可被离线伪造 admin 令牌免密登录。
+#   2) 环境变量没配时，就用 secrets 随机生成一把（安全，但只存在内存里、不落盘）。
+# 代价：随机密钥"不跨重启存活"——进程一重启就换新密钥，旧令牌全部验签失败、所有人需重新登录。
+# 所以生产务必在环境变量里配置一个固定的 SECRET_KEY：既保密（不进源码），又稳定
+#   （重启不掉线、多实例部署时各实例用同一把密钥，令牌才能互相验签通过）。
 SECRET_KEY = os.environ.get("SECRET_KEY")
 if not SECRET_KEY:
     import secrets

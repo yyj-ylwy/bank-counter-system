@@ -48,6 +48,11 @@ def _body():
     return b if isinstance(b, dict) else {}
 
 
+def _truthy(v):
+    """把前端传来的勾选/开关值统一判真（"1"/"true"/"yes"/"on"/True 都算真）。"""
+    return str(v).strip().lower() in ("1", "true", "yes", "on") if v is not None else False
+
+
 def _today():
     return now().strftime("%Y%m%d")
 
@@ -176,7 +181,10 @@ def product_view(db, p, with_price=True):
          "currency": p.get("currency", "CNY"),
          "risk_level": p.get("risk_level"), "risk_label": C.RISK_LEVEL_LABEL.get(p.get("risk_level"), "-"),
          "source_label": C.INVEST_SOURCE_LABEL.get(p.get("source"), p.get("source")),
-         "status_label": C.INVEST_PRODUCT_STATUS_LABEL.get(p.get("status"), p.get("status"))}
+         "status_label": C.INVEST_PRODUCT_STATUS_LABEL.get(p.get("status"), p.get("status")),
+         "is_money_fund": bool(p.get("is_money_fund")),  # 货基→支持快速赎回
+         "mgmt_fee": p.get("mgmt_fee"), "custody_fee": p.get("custody_fee"),  # 费率披露（不参与计算）
+         "scope": p.get("scope"), "benchmark": p.get("benchmark"), "prospectus_url": p.get("prospectus_url")}
     if with_price:  # 列表只读已存价，不逐个联网(避免慢/限流)
         doc, is_today, _ = latest_price_doc(db, p, allow_fetch=False)
         if doc:
@@ -187,11 +195,13 @@ def product_view(db, p, with_price=True):
 
 
 # ==================== 手续费/税费（纯函数，一处计算，申购/赎回共用）====================
-def buy_fees(ptype, amount):
+def buy_fees(ptype, amount, is_money_fund=False):
     """买入费用。基金(外扣法)：amount=申购金额(含费)，净申购=amount/(1+费率)，份额基数=净额，扣款=amount。
     股票(A股费率,外加)：amount=成交额，佣金+过户费外加，份额基数=amount，扣款=amount+费。
-    返回 (units_base, fee_total, fee_detail{中文:金额}, total_debit)。"""
+    货币基金：申购免费。返回 (units_base, fee_total, fee_detail{中文:金额}, total_debit)。"""
     if ptype == "FUND":
+        if is_money_fund:  # 货币基金申购不收费
+            return amount, D(0), {"申购费": 0.0}, amount
         rate = dec(C.INVEST_FUND_BUY_FEE)
         net = D(amount / (Decimal(1) + rate))
         fee = amount - net
@@ -202,10 +212,12 @@ def buy_fees(ptype, amount):
     return amount, fee, {"佣金": float(comm), "过户费": float(transfer)}, amount + fee
 
 
-def sell_fees(ptype, gross, hold_days=None):
+def sell_fees(ptype, gross, hold_days=None, is_money_fund=False):
     """卖出/赎回费用。gross=成交额(份额×净值)。返回 (fee_total, fee_detail, proceeds=gross-fee)。
-    基金赎回费按持有天数递减(<7天1.5%/7~30天0.5%/≥30天0)；股票=佣金(双向)+印花税(卖出)+过户费。"""
+    基金赎回费按持有天数递减(<7天1.5%/7~30天0.5%/≥30天0)；货币基金免赎回费；股票=佣金(双向)+印花税(卖出)+过户费。"""
     if ptype == "FUND":
+        if is_money_fund:  # 货币基金赎回不收费
+            return D(0), {"赎回费": 0.0, "货币基金": "免赎回费"}, gross
         rate = D(0)
         for days, r in C.INVEST_FUND_REDEEM_TIERS:
             if hold_days is not None and hold_days < days:
@@ -238,11 +250,19 @@ def upsert_product():
         return fail("E-REQ", "风险等级应为 1-5", 400)
     status = as_int(d.get("status"), C.INVEST_PRODUCT_ACTIVE)
     currency = "CNY" if ptype == "FUND" else (d.get("currency") or "USD").strip().upper()
+    is_mmf = ptype == "FUND" and _truthy(d.get("is_money_fund"))  # 货币基金：支持 T+0 快速赎回(限额)
+    # 管理费/托管费：仅信息披露（每日计提、已含在净值里），不参与任何金额计算；缺省取默认费率
+    mgmt_fee = str(d.get("mgmt_fee") or (C.INVEST_FUND_MGMT_FEE if ptype == "FUND" else "0")).strip()
+    custody_fee = str(d.get("custody_fee") or (C.INVEST_FUND_CUSTODY_FEE if ptype == "FUND" else "0")).strip()
     db = get_db()
     db.invest_product.update_one({"code": code}, {"$set": {
         "code": code, "name": name, "ptype": ptype, "market_symbol": symbol,
         "currency": currency, "risk_level": risk,
         "source": "ttjj" if ptype == "FUND" else "av",
+        "is_money_fund": is_mmf, "mgmt_fee": mgmt_fee, "custody_fee": custody_fee,  # 货基标志 + 费率披露
+        "scope": (d.get("scope") or "").strip(),          # 投资范围（披露）
+        "benchmark": (d.get("benchmark") or "").strip(),  # 业绩比较基准（披露）
+        "prospectus_url": (d.get("prospectus_url") or "").strip(),  # 招募说明书链接（披露）
         "status": status, "updated_at": now()}}, upsert=True)
     write_audit(db, user_id=g.user["_id"], action="INVEST_PRODUCT", object_type="invest_product",
                 object_id=code, result=C.RESULT_SUCCESS, detail={"name": name, "ptype": ptype})
@@ -272,7 +292,10 @@ def quote():
                "currency": p.get("currency", "CNY"),
                "price_local": float(dec(doc["price_local"])), "price_cny": float(dec(doc["price_cny"])),
                "fx_rate": float(dec(doc.get("fx_rate", 1))), "date": doc["date"], "as_of": doc.get("as_of"),
-               "stale": not is_today, "source_label": C.INVEST_SOURCE_LABEL.get(doc.get("source"))})
+               "stale": not is_today, "source_label": C.INVEST_SOURCE_LABEL.get(doc.get("source")),
+               "is_money_fund": bool(p.get("is_money_fund")),
+               "mgmt_fee": p.get("mgmt_fee"), "custody_fee": p.get("custody_fee"),  # 费率披露
+               "scope": p.get("scope"), "benchmark": p.get("benchmark"), "prospectus_url": p.get("prospectus_url")})
 
 
 @bp.post("/refresh-prices")
@@ -338,12 +361,22 @@ def buy():
     cust_risk = cust.get("invest_risk_level")  # 风险适配
     if cust_risk is None:
         return fail("E-RISK", "该客户尚未做风险测评，请先测评")
-    if p.get("risk_level", 1) > cust_risk:
-        return fail("E-RISK", f"产品风险「{C.RISK_LEVEL_LABEL.get(p['risk_level'])}」高于客户承受等级「{C.RISK_LEVEL_LABEL.get(cust_risk)}」，不可申购")
+    assessed_at = cust.get("invest_risk_at")  # 测评有效期：超 12 个月失效，须重做（赎回不受限）
+    if assessed_at and (now() - assessed_at).days > C.INVEST_ASSESS_VALID_DAYS:
+        return fail("E-RISK", f"该客户风险测评已过期（超 {C.INVEST_ASSESS_VALID_DAYS} 天），请先重新测评再申购")
+    prod_risk = p.get("risk_level", 1)
+    risk_mismatch = prod_risk > cust_risk  # 产品风险高于客户承受等级
+    if risk_mismatch:  # 风险不匹配：C1 硬禁止 / 超 2 级硬禁止 / 超 1 级须签《风险不匹配确认书》
+        if cust_risk == 1:
+            return fail("E-RISK", "客户为最低风险承受等级(C1)，按适当性规定禁止购买高于其承受能力的产品")
+        if prod_risk - cust_risk >= 2:
+            return fail("E-RISK", f"产品风险「{C.RISK_LEVEL_LABEL.get(prod_risk)}」比客户承受等级「{C.RISK_LEVEL_LABEL.get(cust_risk)}」高 2 级及以上，不可申购")
+        if not _truthy(d.get("mismatch_confirmed")):  # 超 1 级：客户坚持须先签确认书
+            return fail("E-RISK", f"产品风险「{C.RISK_LEVEL_LABEL.get(prod_risk)}」高于客户承受等级「{C.RISK_LEVEL_LABEL.get(cust_risk)}」；如客户坚持购买，请签署《风险不匹配确认书》(勾选后重新提交)")
     price_cny, pdoc, perr = price_for_trade(db, p)  # 事务外取新鲜价
     if perr:
         return fail(perr[0], perr[1])
-    units_base, fee, fee_detail, total_debit = buy_fees(p["ptype"], amount)  # 计费(基金外扣/股票外加)
+    units_base, fee, fee_detail, total_debit = buy_fees(p["ptype"], amount, p.get("is_money_fund"))  # 计费(基金外扣/股票外加/货基免费)
     units = D4(units_base / price_cny)
     if units <= 0:
         return fail("E-AMT", "申购金额过小，折算份额不足", 400)
@@ -369,11 +402,12 @@ def buy():
         db.business_transaction.update_one({"_id": t["_id"]}, {"$set": {  # 交易/交割单快照
             "product_code": code, "units": m4(units), "price_cny": m4(price_cny), "price_date": pdoc["date"],
             "fee": m(fee), "fee_detail": fee_detail, "amount_gross": m(amount),
-            "confirm_date": confirm_date, "settle_status": "待确认(T+1)"}}, session=s)
+            "confirm_date": confirm_date, "settle_status": C.INVEST_SETTLE_STATUS["BUY_PENDING"],
+            "risk_mismatch": risk_mismatch}}, session=s)  # 是否风险不匹配签约购买(留痕)
         write_audit(db, user_id=g.user["_id"], action=C.TXN_INVEST_BUY, object_type="invest_holding",
                     object_id=code, result=C.RESULT_SUCCESS,
-                    detail={"amount": str(amount), "fee": str(fee), "units": str(units),
-                            "price_cny": str(price_cny), "account_no": account_no}, session=s)
+                    detail={"amount": str(amount), "fee": str(fee), "units": str(units), "price_cny": str(price_cny),
+                            "account_no": account_no, "risk_mismatch": risk_mismatch}, session=s)
         return t, None
 
     t, err = run_in_transaction(txn)
@@ -382,7 +416,9 @@ def buy():
     return ok({"product": p["name"], "ptype": C.INVEST_PTYPE_LABEL.get(p["ptype"]),
                "amount": float(amount), "fee": float(fee), "fee_detail": fee_detail,
                "total_debit": float(total_debit), "units": float(units), "price_cny": float(price_cny),
-               "price_date": pdoc["date"], "confirm_date": confirm_date, "txn_no": t["txn_no"]}, "申购成功")
+               "price_date": pdoc["date"], "confirm_date": confirm_date,
+               "settle_status": C.INVEST_SETTLE_STATUS["BUY_PENDING"], "risk_mismatch": risk_mismatch,
+               "confirm_no": t["txn_no"], "txn_no": t["txn_no"]}, "申购成功")  # confirm_no=成交确认单号
 
 
 # ==================== UC-605 赎回（卖出）====================
@@ -408,6 +444,9 @@ def sell():
     price_cny, pdoc, perr = price_for_trade(db, p)  # 事务外取新鲜价
     if perr:
         return fail(perr[0], perr[1])
+    fast = _truthy(d.get("fast"))  # 货币基金快速赎回(T+0)
+    if fast and not p.get("is_money_fund"):
+        return fail("E-REQ", "仅货币基金支持快速赎回(T+0)，普通产品请取消勾选「快速赎回」", 400)
 
     def txn(s):
         h = db.invest_holding.find_one({"customer_id": cust["_id"], "product_code": code}, session=s)  # 事务内重读
@@ -418,9 +457,11 @@ def sell():
         if su > held:  # 防超卖
             return None, ("E-UNITS", f"赎回份额超过持仓：持有 {held}，赎回 {su}")
         gross = D(su * price_cny)  # 成交额(费前)
+        if fast and gross > D(C.INVEST_MMF_FAST_REDEEM_MAX):  # 货基快赎单日限额 1 万
+            return None, ("E-LIMIT", f"货币基金快速赎回单日限额 {C.INVEST_MMF_FAST_REDEEM_MAX} 元，本次成交额 {gross}，请改用普通赎回")
         fbd = h.get("first_buy_date")
         hold_days = (now() - fbd).days if fbd else None  # 持有天数→赎回费档位
-        fee, fee_detail, proceeds = sell_fees(p["ptype"], gross, hold_days)  # 计费，实收=费后
+        fee, fee_detail, proceeds = sell_fees(p["ptype"], gross, hold_days, p.get("is_money_fund"))  # 计费，实收=费后
         if su >= held:  # 全部赎回：残余成本/份额归零，避免尾差
             removed_cost, new_units, new_cost = remaining_cost, D4(0), D(0)
         else:  # 部分赎回：按加权平均成本比例结转
@@ -437,25 +478,52 @@ def sell():
             "realized_pnl_cny": m(realized + realized_delta)}}, session=s)
         t = write_txn(db, business_type=C.TXN_INVEST_SELL, amount=proceeds, user_id=g.user["_id"],
                       customer_id=cust["_id"], account_id=acc["_id"], session=s)
-        settle_date = (now() + _td(days=C.INVEST_SETTLE_DAYS)).strftime("%Y-%m-%d")  # T+N 到账日
+        if fast:  # 货基快速赎回：当日到账(T+0)
+            settle_date, settle_status = now().strftime("%Y-%m-%d"), C.INVEST_SETTLE_STATUS["SELL_FAST_DONE"]
+        else:  # 普通赎回：T+N 到账，先记待到账
+            settle_date = (now() + _td(days=C.INVEST_SETTLE_DAYS)).strftime("%Y-%m-%d")
+            settle_status = C.INVEST_SETTLE_STATUS["SELL_PENDING"]
         db.business_transaction.update_one({"_id": t["_id"]}, {"$set": {  # 交易/交割单快照
             "product_code": code, "units": m4(su), "price_cny": m4(price_cny), "price_date": pdoc["date"],
             "amount_gross": m(gross), "fee": m(fee), "fee_detail": fee_detail,
             "removed_cost": m(removed_cost), "realized": m(realized_delta),
-            "settle_date": settle_date, "settle_status": "待到账(T+1)"}}, session=s)
+            "settle_date": settle_date, "settle_status": settle_status}}, session=s)
         write_audit(db, user_id=g.user["_id"], action=C.TXN_INVEST_SELL, object_type="invest_holding",
                     object_id=code, result=C.RESULT_SUCCESS,
                     detail={"units": str(su), "gross": str(gross), "fee": str(fee), "proceeds": str(proceeds),
-                            "realized": str(realized_delta), "account_no": account_no}, session=s)
+                            "realized": str(realized_delta), "account_no": account_no, "fast": fast}, session=s)
         return {"units": float(su), "amount_gross": float(gross), "fee": float(fee), "fee_detail": fee_detail,
-                "proceeds": float(proceeds), "realized": float(realized_delta),
-                "settle_date": settle_date, "txn_no": t["txn_no"]}, None
+                "proceeds": float(proceeds), "realized": float(realized_delta), "fast": fast,
+                "settle_date": settle_date, "settle_status": settle_status,
+                "confirm_no": t["txn_no"], "txn_no": t["txn_no"]}, None
 
     res, err = run_in_transaction(txn)
     if err:
         return fail(err[0], err[1])
     return ok({"product": p["name"], "ptype": C.INVEST_PTYPE_LABEL.get(p["ptype"]),
                "price_cny": float(price_cny), "price_date": pdoc["date"], **res}, "赎回成功")
+
+
+# ==================== UC-609 份额确认 / 资金到账（T+1 状态流转，批量）====================
+@bp.post("/confirm-settlements")
+@clerk
+def confirm_settlements():
+    """把到了确认日/到账日的申赎单据从"待确认/待到账"翻成"已确认/已到账"。
+    ponytail: 教学简化——份额/资金在下单时已即时入账，这里只做交割单状态位的 T+1 流转(可演示、可讲)。"""
+    db = get_db()
+    today = now().strftime("%Y-%m-%d")  # 与快照里 confirm_date/settle_date 同为 YYYY-MM-DD，可直接字符串比较
+    confirmed = db.business_transaction.update_many(  # 申购：确认日<=今天 → 份额已确认
+        {"business_type": C.TXN_INVEST_BUY, "settle_status": C.INVEST_SETTLE_STATUS["BUY_PENDING"],
+         "confirm_date": {"$lte": today}},
+        {"$set": {"settle_status": C.INVEST_SETTLE_STATUS["BUY_DONE"]}}).modified_count
+    settled = db.business_transaction.update_many(  # 赎回：到账日<=今天 → 资金已到账
+        {"business_type": C.TXN_INVEST_SELL, "settle_status": C.INVEST_SETTLE_STATUS["SELL_PENDING"],
+         "settle_date": {"$lte": today}},
+        {"$set": {"settle_status": C.INVEST_SETTLE_STATUS["SELL_DONE"]}}).modified_count
+    write_audit(db, user_id=g.user["_id"], action="INVEST_SETTLE", object_type="business_transaction",
+                object_id="-", result=C.RESULT_SUCCESS, detail={"confirmed": confirmed, "settled": settled})
+    return ok({"confirmed": confirmed, "settled": settled},
+              f"已确认份额 {confirmed} 笔、资金到账 {settled} 笔（截至 {today}）")
 
 
 # ==================== UC-606 持仓查询（累计盈亏 + 日/周/月/年价格变动）====================
@@ -540,4 +608,7 @@ if __name__ == "__main__":
     assert sell_fees("FUND", D(750), 40)[2] == D(750)               # ≥30天 免赎回费
     # 股票卖出：佣金+印花税(单边)+过户费
     assert sell_fees("STOCK", D(1440), None)[2] == D("1434.25")      # 1440-5-0.72-0.03
-    print("invest self-check OK: 加权平均成本/已实现/未实现/清仓归零/手续费(申赎股票) 全部通过")
+    # 货币基金：申购、赎回均免费（不论持有天数）
+    assert buy_fees("FUND", D(1000), True) == (D(1000), D(0), {"申购费": 0.0}, D(1000))
+    assert sell_fees("FUND", D(750), 0, True)[0] == D(0) and sell_fees("FUND", D(750), 0, True)[2] == D(750)
+    print("invest self-check OK: 加权平均成本/已实现/未实现/清仓归零/手续费(申赎股票)/货基免费 全部通过")

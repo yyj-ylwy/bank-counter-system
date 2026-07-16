@@ -490,6 +490,7 @@ const OPERATIONS = {
       fields: [],
       result: d => d.products.length ? tbl(d.products, [
         { k: 'code', label: '代码' }, { k: 'name', label: '名称' }, { k: 'ptype_label', label: '类型' },
+        { k: 'is_money_fund', label: '货基', fmt: v => v ? '是' : '' },
         { k: 'risk_label', label: '风险' }, { k: 'currency', label: '币种' },
         { k: 'price_cny', label: '最新净值/价(CNY)', fmt: v => v == null ? '-' : money(v) },
         { k: 'price_date', label: '价格日期', fmt: v => v || '待刷新' },
@@ -498,7 +499,10 @@ const OPERATIONS = {
     {
       code: 'UC-602', name: '实时行情查询', method: 'GET', path: '/api/invest/quote',
       fields: [{ n: 'product_code', label: '产品代码', required: true, hint: '如 000001 / 110020 / 000198 / AAPL' }],
-      result: d => kv({ '产品': d.name + '（' + d.code + '）', '类型': d.ptype_label, '计价币种': d.currency, '本币价': d.price_local, '折CNY价': money(d.price_cny), '汇率': d.fx_rate, '行情日期': d.date + (d.stale ? '（非当日·参考）' : ''), '数据源': d.source_label })
+      result: d => kv(Object.assign({ '产品': d.name + '（' + d.code + '）', '类型': d.ptype_label + (d.is_money_fund ? '·货币基金' : ''), '计价币种': d.currency, '本币价': d.price_local, '折CNY价': money(d.price_cny), '汇率': d.fx_rate, '行情日期': d.date + (d.stale ? '（非当日·参考）' : ''), '数据源': d.source_label },
+        d.mgmt_fee ? { '管理费(年)': pct(d.mgmt_fee), '托管费(年)': pct(d.custody_fee) } : {},
+        d.scope ? { '投资范围': d.scope } : {}, d.benchmark ? { '业绩比较基准': d.benchmark } : {}))
+        + '<p class="hint">管理费/托管费每日计提、已含在净值中，仅作披露，不另行扣收</p>'
         + (d.stale ? '<p class="hint">当前为最近可得行情，非当日实时，可点「行情刷新」更新</p>' : ''),
     },
     {
@@ -526,11 +530,12 @@ const OPERATIONS = {
         { n: 'ident', label: '客户身份标识', required: true, hint: '证件号/邮箱/手机号/账号，任填其一' },
         { n: 'product_code', label: '产品代码', required: true, hint: '如 000001 / 110020 / AAPL' },
         { n: 'amount', label: '申购金额(元)', type: 'number', required: true, hint: '从客户储蓄账户扣款，按当日净值折算份额' },
+        { n: 'mismatch_confirmed', label: '客户已签《风险不匹配确认书》', type: 'checkbox', hint: '仅当产品风险高于客户承受等级 1 级、客户仍坚持购买时勾选（C1 或高 2 级及以上一律禁止）' },
       ],
-      result: d => kv({ '产品': d.product + (d.ptype ? '（' + d.ptype + '）' : ''), '成交金额': money(d.amount),
+      result: d => kv(Object.assign({ '产品': d.product + (d.ptype ? '（' + d.ptype + '）' : ''), '成交金额': money(d.amount),
         '手续费': money(d.fee) + '（' + feeStr(d.fee_detail) + '）', '实付合计': money(d.total_debit),
-        '成交净值(CNY)': money(d.price_cny), '确认份额': d.units, '份额确认日(T+1)': d.confirm_date,
-        '行情日期': d.price_date, '流水号': d.txn_no }),
+        '成交净值(CNY)': money(d.price_cny), '确认份额': d.units, '受理状态': d.settle_status, '份额确认日(T+1)': d.confirm_date,
+        '行情日期': d.price_date, '成交确认单号': d.confirm_no }, d.risk_mismatch ? { '风险提示': '风险不匹配·客户已签确认书购买' } : {})),
     },
     {
       code: 'UC-606', name: '基金/股票赎回', method: 'POST', path: '/api/invest/sell',
@@ -539,11 +544,12 @@ const OPERATIONS = {
         { n: 'product_code', label: '产品代码', required: true },
         { n: 'units', label: '赎回份额', type: 'number', hint: '全部赎回可勾选下方，或填份额' },
         { n: 'all', label: '全部赎回', type: 'checkbox' },
+        { n: 'fast', label: '货币基金快速赎回(T+0)', type: 'checkbox', hint: '仅货币基金，单日限额 1 万元，当日到账' },
       ],
       result: d => kv({ '产品': d.product + (d.ptype ? '（' + d.ptype + '）' : ''), '赎回份额': d.units,
         '成交净值(CNY)': money(d.price_cny), '成交金额': money(d.amount_gross),
         '手续费': money(d.fee) + '（' + feeStr(d.fee_detail) + '）', '实收到账': money(d.proceeds),
-        '本次已实现盈亏': money(d.realized), '资金到账日(T+1)': d.settle_date, '流水号': d.txn_no }),
+        '本次已实现盈亏': money(d.realized), '受理状态': d.settle_status, '资金到账日': d.settle_date, '成交确认单号': d.confirm_no }),
       validate: v => (!v.all && !(Number(v.units) > 0)) ? '请填写赎回份额，或勾选「全部赎回」' : null,
     },
     {
@@ -568,10 +574,22 @@ const OPERATIONS = {
         { n: 'ptype', label: '类型', type: 'select', options: [{ value: 'FUND', label: '基金(人民币,天天基金)' }, { value: 'STOCK', label: '股票(美股USD,自动折CNY)' }] },
         { n: 'market_symbol', label: '行情代码', required: true, hint: '一般同产品代码' },
         { n: 'risk_level', label: '风险等级', type: 'select', options: [{ value: '1', label: '1-低' }, { value: '2', label: '2-中低' }, { value: '3', label: '3-中' }, { value: '4', label: '4-中高' }, { value: '5', label: '5-高' }] },
+        { n: 'is_money_fund', label: '货币基金', type: 'checkbox', hint: '勾选后支持 T+0 快速赎回、申赎免手续费' },
+        { n: 'mgmt_fee', label: '管理费(年,小数)', hint: '如 0.015 表示 1.5%；留空取默认。仅披露不扣收' },
+        { n: 'custody_fee', label: '托管费(年,小数)', hint: '如 0.0025 表示 0.25%；留空取默认' },
+        { n: 'scope', label: '投资范围', hint: '披露用，如"沪深300成份股…"' },
+        { n: 'benchmark', label: '业绩比较基准', hint: '披露用，如"沪深300指数×95%…"' },
+        { n: 'prospectus_url', label: '招募说明书链接', hint: '披露用，可留空' },
         { n: 'status', label: '状态', type: 'select', options: [{ value: '1', label: '在售' }, { value: '0', label: '停售' }] },
       ],
       hint: '维护理财产品目录；股票默认按美股(USD)取价并折算人民币',
       result: d => kv({ '产品代码': d.code, '名称': d.name }),
+    },
+    {
+      code: 'UC-609', name: '份额确认/资金到账(T+1)', method: 'POST', path: '/api/invest/confirm-settlements',
+      fields: [],
+      hint: '把到了确认日/到账日的申购/赎回单据，从「待确认/待到账」批量更新为「已确认/已到账」（演示 T+1 状态流转）',
+      result: d => kv({ '份额已确认': d.confirmed + ' 笔', '资金已到账': d.settled + ' 笔' }),
     },
   ],
 

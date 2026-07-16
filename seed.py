@@ -29,6 +29,19 @@ INVEST_PRODUCTS = [
     ("000001", "华夏成长混合", "FUND", "CNY", 4),
     ("AAPL", "苹果公司(美股)", "STOCK", "USD", 5),
 ]
+# 产品信息披露（投资范围 / 业绩比较基准），仅展示用
+INVEST_PRODUCT_SCOPE = {
+    "000198": "货币市场工具：短期国债、央行票据、同业存单、协议存款等",
+    "110020": "沪深300指数成份股及备选成份股，紧密跟踪沪深300指数",
+    "000001": "股票、债券及货币市场工具，以成长型股票为主",
+    "AAPL": "美股：苹果公司(AAPL) 普通股",
+}
+INVEST_PRODUCT_BENCH = {
+    "000198": "七日年化收益率",
+    "110020": "沪深300指数收益率×95% + 银行活期存款利率×5%",
+    "000001": "沪深300指数×70% + 中证全债指数×30%",
+    "AAPL": "标普500指数收益率",
+}
 # 演示历史行情（本币价，key=距今天数）：让持仓的日/周/月/年价格变动有数据可算（离线可跑）
 _FX_SEED = "7.2000"  # 美股 USD→CNY 演示汇率
 INVEST_PRICE_SEED = {
@@ -131,10 +144,17 @@ def run_seed():
     # --- 演示理财产品 + 历史行情 + 客户风险等级/持仓 ---
     if db.invest_product.count_documents({}) == 0:
         for code, name, ptype, currency, risk in INVEST_PRODUCTS:
+            is_mmf = code == "000198"  # 天弘余额宝=货币基金：支持 T+0 快速赎回、申赎免费
             db.invest_product.insert_one({
                 "code": code, "name": name, "ptype": ptype, "market_symbol": code,
                 "currency": currency, "risk_level": risk,
                 "source": "ttjj" if ptype == "FUND" else "av",
+                "is_money_fund": is_mmf,
+                # 费率披露（仅展示、不参与计算）：货基费率较低，其余用默认
+                "mgmt_fee": ("0.0015" if is_mmf else (C.INVEST_FUND_MGMT_FEE if ptype == "FUND" else "0")),
+                "custody_fee": ("0.0005" if is_mmf else (C.INVEST_FUND_CUSTODY_FEE if ptype == "FUND" else "0")),
+                "scope": INVEST_PRODUCT_SCOPE.get(code, ""),
+                "benchmark": INVEST_PRODUCT_BENCH.get(code, ""), "prospectus_url": "",
                 "status": C.INVEST_PRODUCT_ACTIVE, "created_at": now()})
         _seed_prices(db)
         _seed_holdings(db)

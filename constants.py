@@ -219,3 +219,12 @@ INVEST_STOCK_STAMP = "0.0005"         # 印花税 0.05%（仅卖出单边）
 INVEST_STOCK_TRANSFER = "0.00002"     # 过户费 0.002%（买卖双向）
 INVEST_CONFIRM_DAYS = 1               # 申购 T+1 确认份额（演示）
 INVEST_SETTLE_DAYS = 1                # 赎回/卖出 T+1 到账（演示）
+# —— 更贴近真实系统的合规/交易/披露参数 ——
+INVEST_ASSESS_VALID_DAYS = 365        # 风险测评有效期 12 个月：超期须重做才能申购（赎回不受限）
+INVEST_MMF_FAST_REDEEM_MAX = "10000"  # 货币基金快速赎回单日限额 1 万元（2018 货基新规），超额走普通赎回
+# 基金费用披露（每日计提、已反映在净值里，仅作展示，不参与任何金额计算）
+INVEST_FUND_MGMT_FEE = "0.015"        # 管理费 1.5%/年（默认，产品可覆盖）
+INVEST_FUND_CUSTODY_FEE = "0.0025"    # 托管费 0.25%/年（默认，产品可覆盖）
+INVEST_SETTLE_STATUS = {"BUY_PENDING": "待确认(T+1)", "BUY_DONE": "份额已确认",
+                        "SELL_PENDING": "待到账(T+1)", "SELL_DONE": "资金已到账",
+                        "SELL_FAST_DONE": "快速赎回·已到账(T+0)"}
