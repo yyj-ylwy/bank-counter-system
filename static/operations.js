@@ -71,7 +71,11 @@ const PARAM_NAME = {
   CC_MIN_INTEREST_RATE: '最低还款剩余本金月利率', CC_LIMIT_DEPOSIT_RATIO: '提额上限占存款比例',
   FX_SPREAD: '外汇挂牌点差',
 };
-const PARAM_OPTIONS = Object.entries(PARAM_NAME).map(([value, label]) => ({ value, label }));
+// 哪些参数属于"利率/比例"(输入小数、显示百分比)，其余是"限额/金额"(输入并显示为元) —— 与后端 RATE_PARAM_KEYS 对应
+const PARAM_RATE_KEYS = ['LOAN_RATE', 'LOAN_OVERDUE_RATE', 'TRANSFER_FEE_RATE', 'CC_MIN_REPAY_RATE', 'CC_CASH_ADVANCE_FEE_RATE', 'CC_MIN_INTEREST_RATE', 'CC_LIMIT_DEPOSIT_RATIO', 'FX_SPREAD'];
+const paramIsRate = k => PARAM_RATE_KEYS.includes(k);
+// 下拉标签直接标注类型，让管理员一眼看出该填小数还是填元
+const PARAM_OPTIONS = Object.entries(PARAM_NAME).map(([value, label]) => ({ value, label: label + (paramIsRate(value) ? '（利率·填小数）' : '（限额/金额·填元）') }));
 const paramTypeLabel = t => PARAM_TYPE_LABEL[t] || t || '其他';
 const paramName = k => PARAM_NAME[k] || k;
 // 值按类型带单位显示：利率→百分比，限额→元，汇率等原样
@@ -635,15 +639,26 @@ const OPERATIONS = {
         { k: 'param_type', label: '类型', fmt: paramTypeLabel },
         { k: 'param_value', label: '当前值', fmt: paramValue },
         { k: 'changed_at', label: '最近修改' },
-      ]),
+      ]) + ((d.card_limits && d.card_limits.length) ? '<h4>信用卡各卡种初始授信额度（卡种规格·只读）</h4>' + tbl(d.card_limits, [
+        { k: 'card_type', label: '卡种' }, { k: 'network', label: '卡组织' },
+        { k: 'currency', label: '币种' }, { k: 'default_limit', label: '初始授信额度', fmt: money },
+      ]) : ''),
     },
     {
       code: 'UC-502b', name: '维护参数', method: 'POST', path: '/api/admin/params',
       fields: [
         { n: 'param_key', label: '选择参数', type: 'select', options: PARAM_OPTIONS },
-        { n: 'param_value', label: '新的值', required: true, hint: '利率填小数（0.0435 表示 4.35%）；限额、汇率直接填数字' },
+        { n: 'param_value', label: '新的值', required: true, hint: '利率填小数（0.30 表示 30%）；限额/金额直接填数字（单位：元）' },
       ],
-      hint: '选择要调整的参数，填入新值即可；改后立即生效，无需重启',
+      lookup: {
+        byField: 'param_key',
+        path: '/api/admin/params',
+        find: (d, key) => (d.params || []).find(p => p.param_key === key),
+        fill: p => ({ param_value: p.param_value }),  // 把当前值回填到输入框，避免"盲改"
+        show: p => `当前值：${paramValue(p.param_value, p)}　类型：${paramTypeLabel(p.param_type)}`
+          + (p.param_type === 'RATE' ? '（利率，请填小数：0.30 = 30%）' : p.param_type === 'LIMIT' ? '（限额，请填金额，单位元）' : ''),
+      },
+      hint: '先选参数点「查询并回填」：会带出当前值、并标明它是"利率(填小数，如0.30=30%)"还是"限额(填元)"，看清后再改。改后立即生效。',
       result: d => `<p class="hint">保存成功，可到「参数列表」查看最新值</p>`,
     },
     {

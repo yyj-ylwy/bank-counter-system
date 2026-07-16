@@ -132,7 +132,10 @@ def list_params():
                "param_value": p["param_value"],
                "changed_at": p["changed_at"].strftime("%Y-%m-%d %H:%M:%S") if p.get("changed_at") else None}
               for p in db.system_param.find().sort("param_key", 1)]
-    return ok({"params": params})
+    # 信用卡四种卡的初始授信额度（来自卡种规格 CARD_SPECS，审批激活时按此额度授信；只读展示）
+    card_limits = [{"card_type": ct, "network": spec.get("network"), "currency": spec.get("currency"),
+                    "default_limit": spec.get("default_limit")} for ct, spec in C.CARD_SPECS.items()]
+    return ok({"params": params, "card_limits": card_limits})
 
 
 @bp.post("/params")
