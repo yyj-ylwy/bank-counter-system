@@ -13,6 +13,9 @@ API 现状（已随重构同步）：
 - 外汇买卖/变更用 ident + currency 定位子户。
 - 信用卡「每人每种卡最多一张」，故审批/提额/消费/还款/消费记录/卡片操作一律用
   ident + card_type 定位唯一卡，无需卡号。信用卡账单与预借现金功能已在重做时移除。
+- 储蓄/贷款重构（OOP 领域层 bankcore/loan_domain）后新增：UC-109 当日冲正、资金操作幂等
+  （request_id）、当日支出限额取款+转账合并、挂失只进不出、贷款还款计划表（等额本息/
+  等额本金/一次性还本付息）、审贷分离（申请/审批/放款不同工号，测试自动创建 L002）。
 
 运行前提：能连通 MongoDB（本地单机 mongod 会自动降级为无事务，见 db.py，不影响断言）。
 外汇实时牌价用例依赖外网行情源（Alpha Vantage 实时，失败回落 er-api 参考价）；牌价写入
@@ -62,6 +65,11 @@ def api(method, path, tok, json=None, query=None):
 def E(r): return r.get("error")
 def OK(r): return r.get("success") is True
 
+# 审贷分离（maker-checker）需要第二名贷款业务员：申请/审批/放款须不同人。幂等创建 L002（已存在返回 E-1 忽略）
+api("POST", "/api/admin/users", AD, json={"employee_no": "L002", "name": "贷款复核员",
+                                          "role": C.ROLE_LOAN, "password": "123456"})
+L2 = login("L002", "123456")
+
 _seq = [0]
 def uid():
     _seq[0] += 1
@@ -94,7 +102,7 @@ def second_account(customer_no, bal="0"):
 
 # ==================== 储蓄 UC-101 ~ 108 ====================
 def t_savings():
-    print("== 储蓄业务 UC-101~108 ==")
+    print("== 储蓄业务 UC-101~109 ==")
     # UC-101 开户
     ok("101 姓名为空→E-REQ [判定]", E(api("POST", "/api/savings/open-account", S, json={"name": "", "id_no": gen_id()})) == "E-REQ")
     ok("101 身份证17位→E-2 [边界]", E(api("POST", "/api/savings/open-account", S, json={"name": "甲", "id_type": "身份证", "id_no": "1101011990010200"})) == "E-2")
@@ -120,8 +128,15 @@ def t_savings():
     ok("102 账户冻结→E-FROZEN [条件]", E(api("POST", "/api/savings/deposit", S, json={"ident": af["account_no"], "amount": "100"})) == "E-FROZEN")
     ac = open_acct(); set_acct(ac["account_no"], status=C.ACCOUNT_CLOSED)
     ok("102 账户已销户→E-CLOSED [条件]", E(api("POST", "/api/savings/deposit", S, json={"ident": ac["account_no"], "amount": "100"})) == "E-CLOSED")
-    al = open_acct(); set_acct(al["account_no"], card_status=C.CARD_LOST)
-    ok("102 卡挂失→E-LOST [条件]", E(api("POST", "/api/savings/deposit", S, json={"ident": al["account_no"], "amount": "100"})) == "E-LOST")
+    al = open_acct(bal="1000"); set_acct(al["account_no"], card_status=C.CARD_LOST)
+    ok("102 挂失卡存款仍成功(只进不出) [规则]", OK(api("POST", "/api/savings/deposit", S, json={"ident": al["account_no"], "amount": "100"})))
+    ok("103 挂失卡取款→E-LOST(只进不出) [规则]", E(api("POST", "/api/savings/withdraw", S, json={"ident": al["account_no"], "amount": "100"})) == "E-LOST")
+    # 幂等：同 request_id 重放不重复入账，返回原流水
+    idm = open_acct(bal="1000"); rq = f"rq-dep-{uid()}"
+    api("POST", "/api/savings/deposit", S, json={"ident": idm["account_no"], "amount": "100", "request_id": rq})
+    r_dup = api("POST", "/api/savings/deposit", S, json={"ident": idm["account_no"], "amount": "100", "request_id": rq})
+    ok("102 幂等重放返回原流水 [规则]", OK(r_dup) and r_dup["data"].get("duplicate") is True)
+    ok("102 幂等重放不重复入账 [金额]", abs(r_dup["data"]["balance"] - 1100.0) < 0.01)
 
     # UC-103 取款：金额/状态/身份核验/日限额（ident 定位账户；证件不匹配走 resolve→E-NOCUST）
     w = open_acct(bal="100000")
@@ -137,6 +152,11 @@ def t_savings():
     ok("103 超日限额50001→E-2 [边界]", E(api("POST", "/api/savings/withdraw", S, json={"ident": lim2["account_no"], "amount": "50001"})) == "E-2")
     wacc = open_acct(bal="100000"); api("POST", "/api/savings/withdraw", S, json={"ident": wacc["account_no"], "amount": "50000"})
     ok("103 叠加超限→E-2 [组合]", E(api("POST", "/api/savings/withdraw", S, json={"ident": wacc["account_no"], "amount": "1"})) == "E-2")
+    # 当日支出限额 = 取款 + 转账合并计算（堵住"转账绕过取款限额"）
+    mix = open_acct(bal="200000"); mixdst = open_acct()
+    ok("104 限额内转账成功 [边界]", OK(api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "ident": mix["account_no"], "to_ident": mixdst["account_no"], "amount": "30000"})))
+    ok("103 转账占用取款限额→E-2 [组合]", E(api("POST", "/api/savings/withdraw", S, json={"ident": mix["account_no"], "amount": "25000"})) == "E-2")
+    ok("103 剩余额度内取款成功 [边界]", OK(api("POST", "/api/savings/withdraw", S, json={"ident": mix["account_no"], "amount": "20000"})))
 
     # UC-104 转账（ident 定位转出方；本行收款方用 to_ident；跨行用 to_account_no+to_bank）
     src = open_acct(bal="10000"); dst = open_acct(bal="0"); sid = src["id_no"]
@@ -194,6 +214,42 @@ def t_savings():
     ok("108 更新手机地址成功 [正常流]", OK(api("POST", "/api/savings/update-customer", S, json={"ident": u["id_no"], "phone": "13900000000", "address": "北京"})))
     ok("108 改名+确认成功 [组合]", OK(api("POST", "/api/savings/update-customer", S, json={"ident": u["id_no"], "name": "新名", "confirm": True, "reason": "更正"})))
 
+    # UC-109 当日冲正（存款=扣回 / 取款=退回 / 转账=双腿+手续费整体反向；原流水打 reversed 标记）
+    rv = open_acct(bal="1000")
+    ok("109 缺流水号→E-REQ [判定]", E(api("POST", "/api/savings/reverse", S, json={"txn_no": "", "reason": "x"})) == "E-REQ")
+    ok("109 缺原因→E-REQ [判定]", E(api("POST", "/api/savings/reverse", S, json={"txn_no": "T1", "reason": ""})) == "E-REQ")
+    ok("109 流水不存在→E-REV [判定]", E(api("POST", "/api/savings/reverse", S, json={"txn_no": "T00000000000000", "reason": "x"})) == "E-REV")
+    rd = api("POST", "/api/savings/deposit", S, json={"ident": rv["account_no"], "amount": "200"})
+    dep_no = rd["data"]["txn"]["txn_no"]
+    r109 = api("POST", "/api/savings/reverse", S, json={"txn_no": dep_no, "reason": "柜员误录金额"})
+    ok("109 存款冲正成功且余额回退 [金额]", OK(r109) and abs(r109["data"]["balance"] - 1000.0) < 0.01)
+    ok("109 重复冲正→E-REV [判定]", E(api("POST", "/api/savings/reverse", S, json={"txn_no": dep_no, "reason": "再冲"})) == "E-REV")
+    rw = api("POST", "/api/savings/withdraw", S, json={"ident": rv["account_no"], "amount": "300"})
+    r109w = api("POST", "/api/savings/reverse", S, json={"txn_no": rw["data"]["txn"]["txn_no"], "reason": "误取"})
+    ok("109 取款冲正余额退回 [金额]", OK(r109w) and abs(r109w["data"]["balance"] - 1000.0) < 0.01)
+    # 跨行转账冲正：本金+手续费两腿一并退回
+    rt = api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTER", "ident": rv["account_no"], "to_account_no": "620999", "to_bank": "工行", "amount": "100"})
+    r109t = api("POST", "/api/savings/reverse", S, json={"txn_no": rt["data"]["txn"]["txn_no"], "reason": "收款账号填错"})
+    ok("109 跨行冲正含手续费腿 [组合]", OK(r109t) and r109t["data"]["legs_reversed"] == 2 and abs(r109t["data"]["balance"] - 1000.0) < 0.01)
+    # 行内转账冲正：转出/转入双腿反向，双方余额均复原
+    rdst = open_acct(bal="50")
+    ri = api("POST", "/api/savings/transfer", S, json={"transfer_type": "INTRA", "ident": rv["account_no"], "to_ident": rdst["account_no"], "amount": "80"})
+    r109i = api("POST", "/api/savings/reverse", S, json={"txn_no": ri["data"]["txn"]["txn_no"], "reason": "重复转账"})
+    dst_bal = api("GET", "/api/savings/query", S, query={"ident": rdst["account_no"]})["data"]["account"]["balance"]
+    ok("109 行内冲正双边复原 [组合]", OK(r109i) and r109i["data"]["legs_reversed"] == 2
+       and abs(r109i["data"]["balance"] - 1000.0) < 0.01 and abs(dst_bal - 50.0) < 0.01)
+    # 存款冲正但客户已把钱取走 → 扣回失败 E-REV
+    poor = open_acct(bal="0")
+    pdep = api("POST", "/api/savings/deposit", S, json={"ident": poor["account_no"], "amount": "200"})
+    api("POST", "/api/savings/withdraw", S, json={"ident": poor["account_no"], "amount": "150"})
+    ok("109 余额不足扣回→E-REV [条件]", E(api("POST", "/api/savings/reverse", S, json={"txn_no": pdep["data"]["txn"]["txn_no"], "reason": "误存"})) == "E-REV")
+    # 隔日流水不可冲正
+    old = open_acct(bal="1000")
+    odep = api("POST", "/api/savings/deposit", S, json={"ident": old["account_no"], "amount": "100"})
+    db.business_transaction.update_one({"txn_no": odep["data"]["txn"]["txn_no"]},
+                                       {"$set": {"txn_time": now() - timedelta(days=1)}})
+    ok("109 隔日流水→E-REV [边界]", E(api("POST", "/api/savings/reverse", S, json={"txn_no": odep["data"]["txn"]["txn_no"], "reason": "隔日"})) == "E-REV")
+
 
 # ==================== 贷款 UC-201 ~ 206 ====================
 def t_loan():
@@ -211,37 +267,63 @@ def t_loan():
     ok("201 黑名单→E-1 [判定]", E(api("POST", "/api/loan/apply", L, json={"ident": black["id_no"], "loan_type": "个人消费贷", "amount": "1000", "term_months": "12"})) == "E-1")
     ok("201 正常申请成功 [正常流]", OK(api("POST", "/api/loan/apply", L, json={"ident": bid, "loan_type": "个人消费贷", "amount": "50000", "term_months": "12"})))
 
-    # UC-202 审批
+    # UC-202 审批（申请一律 L001 经办 → 审批须 L002：审贷分离 maker-checker）
     def new_loan(amount="50000"):
         r = api("POST", "/api/loan/apply", L, json={"ident": bid, "loan_type": "个人消费贷", "amount": amount, "term_months": "12"})
         return r["data"]["loan"]["contract_no"]
-    ok("202 合同不存在→E-NOLOAN [判定]", E(api("POST", "/api/loan/approve", L, json={"contract_no": "X", "decision": "APPROVED"})) == "E-NOLOAN")
-    ok("202 决策非法→E-OP [判定]", E(api("POST", "/api/loan/approve", L, json={"contract_no": new_loan(), "decision": "MAYBE"})) == "E-OP")
-    ok("202 批准金额0→E-VAL [边界]", E(api("POST", "/api/loan/approve", L, json={"contract_no": new_loan(), "decision": "APPROVED", "approved_amount": "0"})) == "E-VAL")
-    ok("202 利率>1→E-VAL [边界]", E(api("POST", "/api/loan/approve", L, json={"contract_no": new_loan(), "decision": "APPROVED", "interest_rate": "4.35"})) == "E-VAL")
-    ok("202 期限361→E-VAL [边界]", E(api("POST", "/api/loan/approve", L, json={"contract_no": new_loan(), "decision": "APPROVED", "term_months": "361"})) == "E-VAL")
-    ok("202 拒绝成功 [判定]", OK(api("POST", "/api/loan/approve", L, json={"contract_no": new_loan(), "decision": "REJECTED", "reason": "资料不足"})))
-    ln_sup = new_loan(); api("POST", "/api/loan/approve", L, json={"contract_no": ln_sup, "decision": "SUPPLEMENT", "reason": "补件"})
+    def approve(cn, **kw):
+        return api("POST", "/api/loan/approve", L2, json={"contract_no": cn, "decision": "APPROVED", **kw})
+    ok("202 合同不存在→E-NOLOAN [判定]", E(api("POST", "/api/loan/approve", L2, json={"contract_no": "X", "decision": "APPROVED"})) == "E-NOLOAN")
+    ok("202 决策非法→E-OP [判定]", E(api("POST", "/api/loan/approve", L2, json={"contract_no": new_loan(), "decision": "MAYBE"})) == "E-OP")
+    ok("202 经办人自审→E-SOD [审贷分离]", E(api("POST", "/api/loan/approve", L, json={"contract_no": new_loan(), "decision": "APPROVED"})) == "E-SOD")
+    ok("202 批准金额0→E-VAL [边界]", E(approve(new_loan(), approved_amount="0")) == "E-VAL")
+    ok("202 利率>1→E-VAL [边界]", E(approve(new_loan(), interest_rate="4.35")) == "E-VAL")
+    ok("202 期限361→E-VAL [边界]", E(approve(new_loan(), term_months="361")) == "E-VAL")
+    ok("202 还款方式非法→E-VAL [判定]", E(approve(new_loan(), repay_method="先息后本")) == "E-VAL")
+    ok("202 拒绝成功 [判定]", OK(api("POST", "/api/loan/approve", L2, json={"contract_no": new_loan(), "decision": "REJECTED", "reason": "资料不足"})))
+    ln_sup = new_loan(); api("POST", "/api/loan/approve", L2, json={"contract_no": ln_sup, "decision": "SUPPLEMENT", "reason": "补件"})
     ok("202 待补件成功 [判定]", True)
-    ok("202 补件后再审批成功 [正常流]", OK(api("POST", "/api/loan/approve", L, json={"contract_no": ln_sup, "decision": "APPROVED", "interest_rate": "0.05"})))
-    ln_rej = new_loan(); api("POST", "/api/loan/approve", L, json={"contract_no": ln_rej, "decision": "REJECTED"})
-    ok("202 终态再审批→E-1 [条件]", E(api("POST", "/api/loan/approve", L, json={"contract_no": ln_rej, "decision": "APPROVED"})) == "E-1")
+    ok("202 补件后再审批成功 [正常流]", OK(approve(ln_sup, interest_rate="0.05")))
+    ln_rej = new_loan(); api("POST", "/api/loan/approve", L2, json={"contract_no": ln_rej, "decision": "REJECTED"})
+    ok("202 终态再审批→E-1 [条件]", E(approve(ln_rej)) == "E-1")
 
-    # UC-203 放款
-    ln = new_loan(); api("POST", "/api/loan/approve", L, json={"contract_no": ln, "decision": "APPROVED", "interest_rate": "0.05"})
+    # UC-203 放款（审批人 L002 不得放款 → 放款由 L001 执行）
+    ln = new_loan(); approve(ln, interest_rate="0.05")  # 默认等额本息
     ok("203 合同不存在→E-NOLOAN [判定]", E(api("POST", "/api/loan/disburse", L, json={"contract_no": "X"})) == "E-NOLOAN")
     ln_pend = new_loan()
     ok("203 未批复放款→E-STATE [判定]", E(api("POST", "/api/loan/disburse", L, json={"contract_no": ln_pend})) == "E-STATE")
-    ok("203 放款成功 [正常流]", OK(api("POST", "/api/loan/disburse", L, json={"contract_no": ln})))
+    ok("203 审批人自放→E-SOD [审贷分离]", E(api("POST", "/api/loan/disburse", L2, json={"contract_no": ln})) == "E-SOD")
+    r203 = api("POST", "/api/loan/disburse", L, json={"contract_no": ln})
+    ok("203 放款成功 [正常流]", OK(r203))
     ok("203 重复放款→E-2 [判定]", E(api("POST", "/api/loan/disburse", L, json={"contract_no": ln})) == "E-2")
+    # 放款生成还款计划（等额本息 12 期）：Σ本金 == 放款额（末期吸收尾差），利息>0，每期还款额恒定
+    lv = r203["data"]["loan"]
+    sched = lv.get("schedule") or []
+    ok("203 计划表12期 [规则]", len(sched) == 12)
+    ok("203 计划Σ本金=放款额 [金额]", abs(sum(i["principal_due"] for i in sched) - 50000.0) < 0.01)
+    ok("203 计划含利息 [金额]", lv.get("interest_remaining", 0) > 0)
+    pmts = [round(i["principal_due"] + i["interest_due"], 2) for i in sched]
+    ok("203 等额本息每期还款额恒定 [规则]", len(set(pmts[:-1])) == 1)
 
-    # UC-204 还款（repay 统一用 ident 定位贷款+还款账户；金额校验在定位之前）
+    # UC-204 还款（瀑布：罚息→利息→本金；SETTLE 提前结清减免未到期利息；request_id 幂等）
     ok("204 金额0→E-AMT [边界]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "0"})) == "E-AMT")
+    ok("204 mode非法→E-OP [判定]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1", "mode": "HALF"})) == "E-OP")
     ok("204 超额还款→E-3 [边界]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "999999"})) == "E-3")
     # base 账户放款后余额=50000，还款需从账户扣；先存够
     api("POST", "/api/savings/deposit", S, json={"ident": base["account_no"], "amount": "60000"})
-    ok("204 部分还款成功 [正常流]", OK(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "10000"})))
-    ok("204 全额结清成功 [边界]", OK(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "40000"})))
+    r204 = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "10000"})
+    ok("204 部分还款成功 [正常流]", OK(r204))
+    lv2 = r204["data"]["loan"]
+    ok("204 瀑布先冲第1期利息 [规则]", lv2["schedule"][0]["interest_paid"] == lv2["schedule"][0]["interest_due"])
+    ok("204 剩余本金=5万-已冲本金 [金额]", abs(lv2["balance"] - (50000.0 - sum(i["principal_paid"] for i in lv2["schedule"]))) < 0.01)
+    rq = f"rq-repay-{uid()}"
+    r1 = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1000", "request_id": rq})
+    r2 = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1000", "request_id": rq})
+    ok("204 幂等重放返回原流水 [规则]", OK(r2) and r2["data"].get("duplicate") is True)
+    ok("204 幂等重放贷款余额不变 [金额]", abs(r2["data"]["loan"]["balance"] - r1["data"]["loan"]["balance"]) < 0.01)
+    rs = api("POST", "/api/loan/repay", L, json={"ident": bid, "mode": "SETTLE"})
+    ok("204 提前结清成功→PAID_OFF [正常流]", OK(rs) and rs["data"]["loan"]["status"] == C.LOAN_PAID_OFF)
+    ok("204 结清减免未到期利息 [规则]", sum(i["waived_interest"] for i in rs["data"]["loan"]["schedule"]) > 0)
     ok("204 已结清再还→E-NOLOAN [判定]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1"})) == "E-NOLOAN")
 
     # 跨客户账户被拒（critical 修复）：apply 用他人 ident 无正常账户时 → E-NOCUST/E-NOACC
@@ -249,15 +331,18 @@ def t_loan():
     other_c = open_acct()
     ok("201 他人已存在客户仍按本人账户放款 [安全]", OK(api("POST", "/api/loan/apply", L, json={"ident": other_c["id_no"], "loan_type": "个人消费贷", "amount": "1000", "term_months": "12"})))
 
-    # UC-205 逾期查询 + 205b 催收（罚息 = 本金50000 × 日率0.0005 × 逾期40天 = 1000）
-    lo = new_loan(); api("POST", "/api/loan/approve", L, json={"contract_no": lo, "decision": "APPROVED", "interest_rate": "0.05"})
+    # UC-205 逾期查询 + 205b 催收（一次性还本付息、零利率贷款造逾期：
+    # 罚息 = 未还本金50000 × 日率0.0005 × 逾期40天 = 1000，与领域层单测同口径）
+    lo = new_loan(); approve(lo, interest_rate="0", repay_method="一次性还本付息")
     api("POST", "/api/loan/disburse", L, json={"contract_no": lo})
     past = now() - timedelta(days=40)
-    db.loan.update_one({"contract_no": lo}, {"$set": {"due_date": past, "penalty_asof": past}})  # 造逾期
+    db.loan.update_one({"contract_no": lo},  # 造逾期：整笔到期日与计划表首期到期日一并回拨
+                       {"$set": {"due_date": past, "schedule.0.due_date": past, "penalty_asof": None}})
     r = api("GET", "/api/loan/overdue", L, query={})
     lorow = next((x for x in r["data"]["loans"] if x["contract_no"] == lo), None) if OK(r) else None
     ok("205 逾期列表含罚息 [正常流]", lorow is not None)
-    ok("205 罚息按增量模型算对(=1000) [金额]", lorow and abs(lorow["penalty"] - 1000.0) < 0.01)
+    ok("205 罚息按期计提算对(=1000) [金额]", lorow and abs(lorow["penalty"] - 1000.0) < 0.01)
+    ok("205 触碰自动置逾期状态 [规则]", lorow and lorow["status"] == C.LOAN_OVERDUE)
     # 逾期部分还款先冲罚息，剩余罚息净额不重复计提。repay 用客户 ident（bid）同时定位该笔逾期贷款与还款账户
     # （此时 base 名下仅 lo 一笔 ACTIVE/OVERDUE 贷款，ln 已 PAID_OFF 被状态过滤，resolve_loan 唯一命中 lo）。
     api("POST", "/api/savings/deposit", S, json={"ident": base["account_no"], "amount": "5000"})

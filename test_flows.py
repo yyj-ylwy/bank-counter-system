@@ -185,6 +185,12 @@ print("\n🔄 流程二：张三贷款全流程")
 t_l = login("L001", "123456")[0]
 step("F2-01", "F2", "贷款员登录", None, check_success(), token=t_l)
 
+# 审贷分离：申请(L001)/审批(L002)/放款(L001) 须不同工号。幂等创建 L002（已存在返回 E-1 忽略）
+t_adm = login("admin", "admin123")[0]
+api("POST", "/api/admin/users", token=t_adm,
+    body={"employee_no": "L002", "name": "贷款复核员", "role": "LOAN_CLERK", "password": "123456"})
+t_l2 = login("L002", "123456")[0]
+
 time.sleep(2)
 s, r = api("POST", "/api/loan/apply", token=t_l, body={
     "ident": "110101199001011234", "loan_type": "个人消费贷",
@@ -198,13 +204,13 @@ step("F2-02", "F2", f"张三贷款申请(合同={ln_contract})", None,
 time.sleep(2)
 
 if ln_contract:
-    s, r = api("POST", "/api/loan/approve", token=t_l, body={
+    s, r = api("POST", "/api/loan/approve", token=t_l2, body={
         "contract_no": ln_contract, "decision": "APPROVED",
         "approved_amount": 30000, "interest_rate": 0.045, "term_months": 6})
-    step("F2-03", "F2", "审批通过", None,
+    step("F2-03", "F2", "审批通过(L002复核·审贷分离)", None,
          lambda s,r,h: (r.get("success", False) and "APPROVED" in json.dumps(r, ensure_ascii=False),
                         r.get("message","")),
-         token=t_l)
+         token=t_l2)
     time.sleep(2)
 
     s, r = api("POST", "/api/loan/disburse", token=t_l, body={"contract_no": ln_contract})
@@ -238,12 +244,12 @@ s, r2 = api("POST", "/api/loan/apply", token=t_l, body={
 rej_cn = r2.get("data", {}).get("loan", {}).get("contract_no", "") if r2.get("success") else ""
 if rej_cn:
     time.sleep(2)
-    s, r = api("POST", "/api/loan/approve", token=t_l,
+    s, r = api("POST", "/api/loan/approve", token=t_l2,
                body={"contract_no": rej_cn, "decision": "REJECTED", "reason": "资料不全"})
-    step("F2-08", "F2", "审批拒绝", None,
+    step("F2-08", "F2", "审批拒绝(L002复核)", None,
          lambda s,r,h: (r.get("success", False) and "REJECTED" in json.dumps(r, ensure_ascii=False),
                         r.get("message","")),
-         token=t_l)
+         token=t_l2)
 
 # ====== 流程三：外汇全流程 ======
 print("\n🔄 流程三：李四外汇买卖全流程")
