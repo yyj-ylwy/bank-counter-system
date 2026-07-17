@@ -441,7 +441,7 @@ const OPERATIONS = {
         byField: 'card_type',
         btnLabel: '确认审批事项',
         path: '/api/creditcard/approve-quote',
-        query: v => ({ ident: v.ident, card_type: v.card_type }),
+        query: v => { if (!v.ident) throw new Error('请先填写「身份标识」'); return { ident: v.ident, card_type: v.card_type }; },
         find: q => q,
         okMsg: '已带出审批事项，请核对后选择审批结论并「提交审批结论」',
         // 按行展示：审批事项 + 卡信息；提额另带 当前额度/申请后额度/对应账户余额/上限/建议(红绿)
@@ -504,7 +504,7 @@ const OPERATIONS = {
         byField: 'card_type',
         btnLabel: '查询当前额度',
         path: '/api/creditcard/query',
-        query: v => ({ ident: v.ident }),   // 凭身份查该客户名下卡，再按卡种取唯一一张
+        query: v => { if (!v.ident) throw new Error('请先填写「身份标识」'); return { ident: v.ident }; },  // 凭身份查该客户名下卡，再按卡种取唯一一张
         find: (d, key) => (d.cards || []).find(c => c.card_type === key),
         okMsg: '已查出该卡当前额度，请在下方「新授信额度」填写高于当前额度的金额后提交',
         render: c => {
@@ -551,7 +551,7 @@ const OPERATIONS = {
         byField: 'card_type',
         btnLabel: '确认应还金额',
         path: '/api/creditcard/repay-quote',
-        query: v => ({ ident: v.ident, card_type: v.card_type }),
+        query: v => { if (!v.ident) throw new Error('请先填写「身份标识」'); return { ident: v.ident, card_type: v.card_type }; },
         find: q => q,
         fill: q => ({ amount: q.outstanding > 0 ? q.outstanding : '' }),  // 指定金额默认带出全额，可改
         okMsg: '应还金额已带出：请在「还款方式」下拉中查看各方式应还多少，选定后点「确认还款」',

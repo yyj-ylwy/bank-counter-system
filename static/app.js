@@ -273,7 +273,8 @@ async function runLookup(op) {
   banner('', '');
   let query = {};
   if (lk.query) {  // 带参查询：先收集并校验表单里的定位字段（如身份标识）
-    try { query = lk.query(gather(op)); } catch (err) { return banner('err', err.message); }
+    // 宽松收集：不强制表单里与查询无关的 required 字段；查询自身所需字段由 lk.query 里各自校验
+    try { query = lk.query(gather(op, { skipRequired: true })); } catch (err) { return banner('err', err.message); }
   }
   const { status, data } = await API.call('GET', lk.path, { query });
   if (status === 401) return sessionExpired();
@@ -330,15 +331,17 @@ function renderField(f) {
 }
 
 // ---------- 收集表单值 ----------
-function gather(op) {
+// skipRequired：查询回填(runLookup)时用——此时只需查询所需的少数字段(如身份+卡种)，
+// 不能因表单里其它 required 字段(如提额的「新授信额度」)未填就拦下查询（那本该先查后填）。
+function gather(op, { skipRequired = false } = {}) {
   const out = {};
   for (const f of op.fields) {
     const el = $('f_' + f.n);
     if (!el) continue;
-    if (f.type === 'checkbox') { if (f.required && !el.checked) throw new Error(`请勾选「${f.label}」`); out[f.n] = el.checked; continue; }
-    if (f.type === 'checkboxVal') { if (f.required && !el.checked) throw new Error(`请勾选「${f.label}」`); if (el.checked) out[f.n] = f.value; continue; }
+    if (f.type === 'checkbox') { if (f.required && !el.checked && !skipRequired) throw new Error(`请勾选「${f.label}」`); out[f.n] = el.checked; continue; }
+    if (f.type === 'checkboxVal') { if (f.required && !el.checked && !skipRequired) throw new Error(`请勾选「${f.label}」`); if (el.checked) out[f.n] = f.value; continue; }
     const v = el.value.trim();
-    if (f.required && v === '') { throw new Error(`请填写「${f.label}」`); }
+    if (f.required && v === '' && !skipRequired) { throw new Error(`请填写「${f.label}」`); }
     if (v !== '') {
       if (f.pattern && !new RegExp('^(?:' + f.pattern + ')$').test(v))
         throw new Error(f.patternMsg || `「${f.label}」格式不正确`);
