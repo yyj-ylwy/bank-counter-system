@@ -499,6 +499,22 @@ const OPERATIONS = {
         { n: 'new_limit', label: '新授信额度', type: 'number', required: true, hint: '须高于当前额度；审批时不得超过存款的规定比例（见系统参数「提额上限占存款比例」）' },
         { n: 'reason', label: '申请理由' },
       ],
+      // 填身份+选卡种后点「查询当前额度」，按行展示该卡当前授信额度与剩余可用额度（只读，供参考后再填新额度）
+      lookup: {
+        byField: 'card_type',
+        btnLabel: '查询当前额度',
+        path: '/api/creditcard/query',
+        query: v => ({ ident: v.ident }),   // 凭身份查该客户名下卡，再按卡种取唯一一张
+        find: (d, key) => (d.cards || []).find(c => c.card_type === key),
+        okMsg: '已查出该卡当前额度，请在下方「新授信额度」填写高于当前额度的金额后提交',
+        render: c => {
+          const u = CUR_UNIT[c.currency] || c.currency;
+          return kvRows([
+            ['当前卡种额度', `${esc(money(c.credit_limit))} ${esc(u)}`],
+            ['当前剩余额度', `${esc(money(c.available_limit))} ${esc(u)}　<span class="hint-inline">已用 ${esc(money(c.used))} ${esc(u)}</span>`],
+          ]);
+        },
+      },
       // 用当前生效的比例改写「新授信额度」字段提示；管理员改「提额上限占存款比例」后此处随之更新
       liveConfig: {
         path: '/api/creditcard/card-benefits',
