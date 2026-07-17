@@ -70,6 +70,9 @@ def _fetch_fund_price(code):
         text = _http_get(f"http://fundgz.1234567.com.cn/js/{code}.js")
         mobj = re.search(r"jsonpgz\((\{.*?\})\)", text)
         if not mobj:
+            # 数据源返回空 jsonpgz();：该基金无实时估值(常见于货币基金/QDII/已清盘或合并的基金)——非系统错误
+            if "jsonpgz()" in text.replace(" ", ""):
+                return None, "该基金无实时估值（天天基金数据源不覆盖，常见于货币基金/QDII/已清盘基金），请改用有净值估值的场外开放式基金"
             return None, "基金行情格式异常"
         data = json.loads(mobj.group(1))
         raw = data.get("gsz") or data.get("dwjz")  # gsz=实时估算净值，dwjz=上一交易日确认净值
