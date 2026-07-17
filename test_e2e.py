@@ -618,6 +618,20 @@ def t_creditcard():
     ok("401 card-benefits 返回 4 张卡 [正常流]", OK(cbf) and len(cbf["data"]["cards"]) == 4)
     _wpb = [c for c in cbf["data"]["cards"] if c["card_type"] == "银联白金卡"][0]
     ok("401 card-benefits 白金卡 limit 反映覆盖值30000 [规则]", _wpb["limit"] == 30000.0)
+    # card-benefits 顺带返回 402/403/405 前端提示要显示的当前系统参数（管理员改后随之变）
+    ok("CB 返回当前提额比例/最低还款比例/月利率 [规则]", OK(cbf)
+       and abs(cbf["data"]["deposit_ratio"] - 0.30) < 1e-9
+       and abs(cbf["data"]["min_repay_rate"] - 0.10) < 1e-9
+       and abs(cbf["data"]["min_interest_rate"] - 0.05) < 1e-9)
+    # 管理员改参数后，前端提示所依赖的 card-benefits 值随之更新（改回原值以免影响后续断言）
+    api("POST", "/api/admin/params", AD, json={"param_key": "CC_LIMIT_DEPOSIT_RATIO", "param_value": "0.40"})
+    api("POST", "/api/admin/params", AD, json={"param_key": "CC_MIN_INTEREST_RATE", "param_value": "0.06"})
+    cbf2 = api("GET", "/api/creditcard/card-benefits", CCK, query={})
+    ok("CB 管理员改参数后 card-benefits 同步更新 [规则]", OK(cbf2)
+       and abs(cbf2["data"]["deposit_ratio"] - 0.40) < 1e-9
+       and abs(cbf2["data"]["min_interest_rate"] - 0.06) < 1e-9)
+    api("POST", "/api/admin/params", AD, json={"param_key": "CC_LIMIT_DEPOSIT_RATIO", "param_value": "0.30"})
+    api("POST", "/api/admin/params", AD, json={"param_key": "CC_MIN_INTEREST_RATE", "param_value": "0.05"})
 
     # ---------- 历史卡种（重做前的普卡）：不予受理、且启动时被清理 ----------
     lg = open_acct(bal="1000")
