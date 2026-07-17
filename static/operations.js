@@ -744,7 +744,11 @@ const OPERATIONS = {
     },
     {
       code: 'UC-610', name: '理财交易记录/交割单查询', method: 'GET', path: '/api/invest/transactions',
-      fields: [{ n: 'ident', label: '客户身份标识', required: true, hint: '证件号/邮箱/手机号/账号，任填其一' }],
+      fields: [
+        { n: 'ident', label: '客户身份标识', required: true, hint: '证件号/邮箱/手机号/账号，任填其一' },
+        { n: 'start', label: '起始日期', type: 'date', hint: '按成交时间筛选，留空=不限' },
+        { n: 'end', label: '结束日期', type: 'date', hint: '含当天，留空=不限' },
+      ],
       hint: '看该客户每一笔申购/赎回的历史与状态（有没有到账/确认），与「持仓查询」互补。',
       result: d => kv({ '客户': d.customer.name + '（' + d.customer.customer_no + '）', '待确认/待到账笔数': d.pending })
         + (d.transactions.length ? tbl(d.transactions, [

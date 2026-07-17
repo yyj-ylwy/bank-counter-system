@@ -33,7 +33,7 @@ from db import get_db, run_in_transaction
 from auth import require_role
 from common import (
     ok, fail, D, D6, dec, m, now, as_int,
-    resolve_account_no, check_account, write_txn, write_audit,
+    resolve_account_no, check_account, write_txn, write_audit, parse_date_range,
 )
 from forex import refresh_rates  # 复用外汇的 CNY 中间价做货币换算
 
@@ -590,6 +590,11 @@ def transactions():
     if rerr:
         return fail(rerr[0], rerr[1])
     q = {"customer_id": cust["_id"], "business_type": {"$in": [C.TXN_INVEST_BUY, C.TXN_INVEST_SELL]}}
+    rng = parse_date_range(request.args.get("start"), request.args.get("end"))  # 按成交时间做日期筛选
+    if rng is None:
+        return fail("E-DATE", "日期格式应为 YYYY-MM-DD", 400)
+    if rng:
+        q["txn_time"] = rng
     rows, prod_cache, pending = [], {}, 0
     for t in db.business_transaction.find(q).sort("txn_time", -1).limit(200):  # 最近 200 笔，倒序
         code = t.get("product_code")
