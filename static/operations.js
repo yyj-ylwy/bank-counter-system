@@ -458,7 +458,15 @@ const OPERATIONS = {
           return kvRows(rows);
         },
       },
-      hint: '两步：① 填身份、选卡种后点「确认审批事项」，带出客户是申请新卡还是提额（提额会给出额度/余额对比与红绿建议）；② 再选审批结论点「提交审批结论」。新卡按卡种默认额度激活；提额新额度不得高于存款的规定比例（见系统参数「提额上限占存款比例」，点『确认审批事项』会按当前比例给出上限与红绿建议）。',
+      hint: '两步：① 填身份、选卡种后点「确认审批事项」，带出客户是申请新卡还是提额（提额会给出额度/余额对比与红绿建议）；② 再选审批结论点「提交审批结论」。新卡按卡种初始额度激活；提额新额度不得高于存款的规定比例（见系统参数「提额上限占存款比例」，点『确认审批事项』会按当前比例给出上限与红绿建议）。',
+      // 用当前生效的系统参数改写提示，展示具体比例；管理员在「维护参数」改后此处随之更新
+      liveConfig: {
+        path: '/api/creditcard/card-benefits',
+        apply: cfg => {
+          const el = document.getElementById('opHint');
+          if (el) el.textContent = `两步：① 填身份、选卡种后点「确认审批事项」，带出客户是申请新卡还是提额（提额会给出额度/余额对比与红绿建议）；② 再选审批结论点「提交审批结论」。新卡按卡种初始额度激活；提额新额度不得高于存款的 ${pct(cfg.deposit_ratio)}（系统参数「提额上限占存款比例」，管理员修改后此处同步；点『确认审批事项』会按当前比例给出上限与红绿建议）。`;
+        },
+      },
       result: d => {
         if (!d.credit_card) return '';
         const c = d.credit_card, base = { '卡号': c.card_no, '卡种': c.card_type, '状态': c.status_label };
@@ -478,6 +486,14 @@ const OPERATIONS = {
         { n: 'new_limit', label: '新授信额度', type: 'number', required: true, hint: '须高于当前额度；审批时不得超过存款的规定比例（见系统参数「提额上限占存款比例」）' },
         { n: 'reason', label: '申请理由' },
       ],
+      // 用当前生效的比例改写「新授信额度」字段提示；管理员改「提额上限占存款比例」后此处随之更新
+      liveConfig: {
+        path: '/api/creditcard/card-benefits',
+        apply: cfg => {
+          const el = document.getElementById('hint_new_limit');
+          if (el) el.textContent = `须高于当前额度；审批时新额度不得高于存款的 ${pct(cfg.deposit_ratio)}（系统参数「提额上限占存款比例」，管理员修改后此处同步）`;
+        },
+      },
       result: d => kv({ '卡号': d.credit_card.card_no, '当前额度': money(d.credit_card.credit_limit) + ' ' + d.credit_card.currency, '申请额度': d.credit_card.limit_req ? money(d.credit_card.limit_req.new_limit) + ' ' + d.credit_card.currency : '-', '申请状态': d.credit_card.limit_req ? d.credit_card.limit_req.status : '-' }),
     },
     {
@@ -544,6 +560,26 @@ const OPERATIONS = {
         },
       },
       hint: '两步：① 填身份、选卡种后点「确认应还金额」，带出该卡各方式应还多少；② 再选还款方式点「确认还款」。人民币卡用人民币储蓄账户还、美元卡用美元外汇子户还；多还部分退回；最低额还款的剩余本金按系统参数「最低还款剩余本金月利率」计息（点『确认应还金额』会给出具体金额）。',
+      // 用当前生效的系统参数改写提示与「还款方式」下拉；管理员改月利率/最低还款比例后此处随之更新。
+      // 下拉在「确认应还金额」后会被 lookup.options 覆盖为具体金额，此处是尚未试算时的比例展示。
+      liveConfig: {
+        path: '/api/creditcard/card-benefits',
+        apply: cfg => {
+          const el = document.getElementById('opHint');
+          if (el) el.textContent = `两步：① 填身份、选卡种后点「确认应还金额」，带出该卡各方式应还多少；② 再选还款方式点「确认还款」。人民币卡用人民币储蓄账户还、美元卡用美元外汇子户还；多还部分退回；最低额还款的剩余本金按月利率 ${pct(cfg.min_interest_rate)} 计息（系统参数「最低还款剩余本金月利率」，管理员修改后此处同步；点『确认应还金额』会给出具体金额）。`;
+          const sel = document.getElementById('f_repay_type');
+          if (sel) {
+            const cur = sel.value;
+            const opts = [
+              { value: 'FULL', label: '提前还款(全额结清)' },
+              { value: 'SCHEDULED', label: '提前还款(指定金额)' },
+              { value: 'MIN', label: `按期最低额还款（最低还款比例 ${pct(cfg.min_repay_rate)}、剩余本金月息 ${pct(cfg.min_interest_rate)}）` },
+            ];
+            sel.innerHTML = opts.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+            if (opts.some(o => o.value === cur)) sel.value = cur;
+          }
+        },
+      },
       result: d => kv({ '卡号': d.credit_card.card_no, '本次还款': money(d.pay) + ' ' + d.currency, '还款来源': d.fund, '循环利息': money(d.interest) + ' ' + d.currency, '剩余欠款': money(d.outstanding) + ' ' + d.currency, '可用额度': money(d.available_limit) + ' ' + d.currency }),
     },
     {

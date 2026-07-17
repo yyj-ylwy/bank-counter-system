@@ -826,4 +826,8 @@ def card_benefits():
             "points": f"每消费 1 美元得 {pts} 分" if pts > 0 else "—",
             "fxfee": "免除" if spec.get("waive_fx_fee") else f"{fxf * 100:g}%",
         })
-    return ok({"cards": cards})
+    # 供前端 UC-402/403/405 的提示文字与下拉动态展示当前生效的系统参数（管理员改后此处随之变）
+    return ok({"cards": cards,
+               "deposit_ratio": float(get_param_dec(db, C.P_CC_LIMIT_DEPOSIT_RATIO, "0.30")),
+               "min_interest_rate": float(get_param_dec(db, C.P_CC_MIN_INTEREST_RATE, "0.05")),
+               "min_repay_rate": float(get_param_dec(db, C.P_CC_MIN_REPAY_RATE, "0.10"))})

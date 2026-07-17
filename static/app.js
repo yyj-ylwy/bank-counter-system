@@ -222,7 +222,7 @@ function selectOp(op, li) {
   $('content').innerHTML = `
     <div class="panel">
       <h2><span class="ic-lg">${icon(op.code)}</span><span class="code">${op.code}</span>${esc(op.name)}</h2>
-      ${op.hint ? `<p class="hint">${esc(op.hint)}</p>` : ''}
+      ${op.hint ? `<p class="hint" id="opHint">${esc(op.hint)}</p>` : ''}
       <form id="opform">${fieldsHtml}${uploadHtml}
         <div class="form-actions">
           <button type="submit" class="btn">${esc(submitLabel(op))}</button>
@@ -237,6 +237,7 @@ function selectOp(op, li) {
   $('opform').onsubmit = e => { e.preventDefault(); submitOp(op); };
   if (op.lookup) { const lb = $('lookupBtn'); if (lb) lb.onclick = () => runLookup(op); }
   if (op.footerLoad) loadFooter(op);  // 异步拉取 footer 数据（如卡种权益动态取有效额度）
+  if (op.liveConfig) loadLiveConfig(op);  // 异步拉取当前系统参数，回填提示文字/下拉（管理员改后随之更新）
   const first = $('opform').querySelector('input:not([type=checkbox]):not([type=file]), select');
   if (first) first.focus();
 }
@@ -249,6 +250,15 @@ async function loadFooter(op) {
   if (status === 401) return sessionExpired();
   if (!data.success || !data.data) { el.innerHTML = '<p class="hint">权益信息加载失败</p>'; return; }
   el.innerHTML = op.footerLoad.render(data.data);
+}
+
+// 拉取当前生效的系统参数，交给 op.liveConfig.apply 回填提示文字/下拉，使前端展示与管理员设置同步。
+// apply(cfg) 内自行按 id 定位并 esc；表单先以静态文案渲染，拉到后再覆盖，故失败时保留静态兜底。
+async function loadLiveConfig(op) {
+  const { status, data } = await API.call('GET', op.liveConfig.path);
+  if (status === 401) return sessionExpired();
+  if (!$('opform') || !data.success || !data.data) return;  // 已切走或加载失败：保留静态提示
+  try { op.liveConfig.apply(data.data); } catch (e) { /* 回填失败不影响表单本身可用 */ }
 }
 
 // 查询回填：凭定位字段(如工号/卡种)先查出当前记录，把其字段值填进表单、并把关键信息显示出来。
@@ -312,7 +322,7 @@ function renderField(f) {
   const req = f.required ? '<span class="req">*</span>' : '';
   return `<div class="field ${f.type === 'checkbox' || f.type === 'checkboxVal' ? 'inline' : ''}">
       <label for="${id}">${esc(f.label)}${req}</label>${input}
-      ${f.hint ? `<small>${esc(f.hint)}</small>` : ''}</div>`;
+      ${f.hint ? `<small id="hint_${f.n}">${esc(f.hint)}</small>` : ''}</div>`;
 }
 
 // ---------- 收集表单值 ----------
