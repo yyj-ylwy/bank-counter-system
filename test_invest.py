@@ -165,6 +165,10 @@ def run():
 
     # 理财业务员维护产品（产品维护归理财业务员，非管理员）
     ok("608 理财员维护理财产品 [正常流]", OK(api("POST", "/api/invest/product", INV, json={"code": "005827", "name": "易方达蓝筹精选", "ptype": "FUND", "market_symbol": "005827", "risk_level": "4", "status": "1"})))
+    # 608 回填：输代码能带出现有产品的可编辑字段
+    pl2 = api("GET", "/api/invest/product-lookup", INV)
+    prow = next((x for x in pl2["data"]["products"] if x["code"] == "005827"), None)
+    ok("608 产品回填带出现有信息 [组合]", prow and prow["name"] == "易方达蓝筹精选" and prow["risk_level"] == 4 and prow.get("market_symbol") == "005827")
     ok("608 类型非法→E-REQ [判定]", E(api("POST", "/api/invest/product", INV, json={"code": "X", "name": "x", "ptype": "BOND", "market_symbol": "x"})) == "E-REQ")
     ok("608 管理员无权维护产品→403 [安全]", cl.post("/api/invest/product", headers={"Authorization": "Bearer " + AD}, json={"code": "Y", "name": "y", "ptype": "FUND", "market_symbol": "y"}).status_code == 403)
 

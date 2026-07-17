@@ -64,26 +64,47 @@ def _http_get(url, timeout=8, encoding="utf-8"):
         return resp.read().decode(encoding, errors="ignore")
 
 
+def _fetch_fund_backup(code):
+    """备用源：天天基金 pingzhongdata，取最近一条确认单位净值(覆盖比实时估值广、免密钥)。
+    返回 (price Decimal, as_of) 或 (None, err)。"""
+    try:
+        text = _http_get(f"http://fund.eastmoney.com/pingzhongdata/{code}.js", timeout=10)
+        m = re.search(r"Data_netWorthTrend\s*=\s*(\[[^\]]*\])", text)  # 单位净值走势数组(对象内无]，可安全截取)
+        if not m:
+            return None, "备用源无净值走势"
+        arr = json.loads(m.group(1))
+        if not arr or arr[-1].get("y") is None:
+            return None, "备用源净值为空"
+        price = Decimal(str(arr[-1]["y"]))  # 最后一条=最近确认净值
+        if price <= 0:
+            return None, "备用源净值非法"
+        try:
+            as_of = _dt.utcfromtimestamp(arr[-1]["x"] / 1000 + 8 * 3600).strftime("%Y-%m-%d") + "(确认净值·备用源)"
+        except Exception:  # noqa: BLE001
+            as_of = "确认净值(备用源)"
+        return price, as_of
+    except Exception as e:  # noqa: BLE001
+        return None, f"备用源获取失败：{e}"
+
+
 def _fetch_fund_price(code):
-    """天天基金实时估值(JSONP)。返回 (price Decimal, as_of) 或 (None, err)。"""
+    """基金净值：主源=天天基金实时估值(JSONP)；主源无估值/异常时回退备用源(pingzhongdata 确认净值)。
+    返回 (price Decimal, as_of) 或 (None, err)。"""
     try:
         text = _http_get(f"http://fundgz.1234567.com.cn/js/{code}.js")
         mobj = re.search(r"jsonpgz\((\{.*?\})\)", text)
-        if not mobj:
-            # 数据源返回空 jsonpgz();：该基金无实时估值(常见于货币基金/QDII/已清盘或合并的基金)——非系统错误
-            if "jsonpgz()" in text.replace(" ", ""):
-                return None, "该基金无实时估值（天天基金数据源不覆盖，常见于货币基金/QDII/已清盘基金），请改用有净值估值的场外开放式基金"
-            return None, "基金行情格式异常"
-        data = json.loads(mobj.group(1))
-        raw = data.get("gsz") or data.get("dwjz")  # gsz=实时估算净值，dwjz=上一交易日确认净值
-        if not raw:
-            return None, "基金净值缺失"
-        price = Decimal(str(raw))
-        if price <= 0:
-            return None, "基金净值非法"
-        return price, (data.get("gztime") or data.get("jzrq") or "")
-    except Exception as e:  # noqa: BLE001 外部行情异常一律降级为业务错误
-        return None, f"基金行情获取失败：{e}"
+        if mobj:
+            data = json.loads(mobj.group(1))
+            raw = data.get("gsz") or data.get("dwjz")  # gsz=实时估算净值，dwjz=上一交易日确认净值
+            if raw and Decimal(str(raw)) > 0:
+                return Decimal(str(raw)), (data.get("gztime") or data.get("jzrq") or "")
+    except Exception:  # noqa: BLE001 主源异常不直接失败，转备用源
+        pass
+    # 主源返回空 jsonpgz(); 或异常 → 回退备用源(确认净值)
+    price, info = _fetch_fund_backup(code)
+    if price is not None:
+        return price, info
+    return None, "该基金主源无实时估值、备用源也无确认净值（数据源不覆盖此基金，常见于货币/QDII/已清盘基金），请改用有净值的场外开放式基金"
 
 
 def _fetch_us_stock_price(symbol):
@@ -278,6 +299,22 @@ def products():
     db = get_db()
     ps = list(db.invest_product.find({"status": C.INVEST_PRODUCT_ACTIVE}).sort("code", 1))
     return ok({"products": [product_view(db, p) for p in ps], "hint": None if ps else "暂无在售产品"})
+
+
+@bp.get("/product-lookup")
+@clerk
+def product_lookup():
+    """产品维护回填：返回全部产品(含停售)的可编辑字段，供 UC-608 输代码点「查询并回填」带出后再改。"""
+    db = get_db()
+    ps = list(db.invest_product.find().sort("code", 1))
+    return ok({"products": [{
+        "code": p["code"], "name": p.get("name"), "ptype": p.get("ptype"),
+        "market_symbol": p.get("market_symbol"), "currency": p.get("currency"),
+        "risk_level": p.get("risk_level"), "is_money_fund": bool(p.get("is_money_fund")),
+        "mgmt_fee": p.get("mgmt_fee"), "custody_fee": p.get("custody_fee"),
+        "scope": p.get("scope"), "benchmark": p.get("benchmark"),
+        "prospectus_url": p.get("prospectus_url"), "status": p.get("status"),
+    } for p in ps]})
 
 
 # ==================== UC-602 行情：实时查询 / 每日刷新 ====================

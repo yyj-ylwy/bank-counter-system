@@ -734,7 +734,16 @@ const OPERATIONS = {
         { n: 'prospectus_url', label: '招募说明书链接', hint: '披露用，可留空' },
         { n: 'status', label: '状态', type: 'select', options: [{ value: '1', label: '在售' }, { value: '0', label: '停售' }] },
       ],
-      hint: '维护理财产品目录；股票默认按美股(USD)取价并折算人民币',
+      lookup: {
+        byField: 'code',
+        path: '/api/invest/product-lookup',
+        find: (d, key) => (d.products || []).find(p => p.code === key),
+        fill: p => ({ name: p.name, ptype: p.ptype, market_symbol: p.market_symbol, risk_level: String(p.risk_level),
+          is_money_fund: p.is_money_fund, mgmt_fee: p.mgmt_fee, custody_fee: p.custody_fee,
+          scope: p.scope, benchmark: p.benchmark, prospectus_url: p.prospectus_url, status: String(p.status) }),
+        show: p => `当前 → ${p.name}｜${p.ptype}｜风险${p.risk_level}｜${p.status === 1 ? '在售' : '停售'}${p.is_money_fund ? '｜货基' : ''}`,
+      },
+      hint: '改已有产品：输产品代码点「查询并回填」带出现有信息，改需要的项再保存；新增产品：直接填。股票默认按美股(USD)取价折人民币。',
       result: d => kv({ '产品代码': d.code, '名称': d.name }),
     },
     {
