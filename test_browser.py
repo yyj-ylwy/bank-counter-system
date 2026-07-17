@@ -8,6 +8,17 @@ from playwright.async_api import async_playwright
 
 URL = "https://bank-counter-system.onrender.com"
 RESULTS = []
+API_LOG = []  # 每个 /api/ 响应的 (状态码, 路径, 响应体前150字)，失败场景直接打印最近两条便于定位
+
+
+def ok(flow, tid, desc, passed, detail=""):
+    m = "✅" if passed else "❌"
+    RESULTS.append({"f": flow, "id": tid, "d": desc, "ok": passed, "detail": str(detail)[:150]})
+    if not passed:
+        print(f"  ❌ {tid}: {desc} → {detail[:100]}")
+        for line in API_LOG[-2:]:
+            print(f"      ↳ API {line}")
+    return passed
 
 
 def ensure_loan_clerk2():
@@ -25,13 +36,7 @@ def ensure_loan_clerk2():
     tok = r.get("data", {}).get("token")
     if tok:
         _api("POST", "/api/admin/users", token=tok,
-             body={"employee_no": "L002", "name": "贷款复核员", "role": "LOAN_CLERK", "password": "123456"})
-
-def ok(flow, tid, desc, passed, detail=""):
-    m = "✅" if passed else "❌"
-    RESULTS.append({"f": flow, "id": tid, "d": desc, "ok": passed, "detail": str(detail)[:150]})
-    if not passed: print(f"  ❌ {tid}: {desc} → {detail[:100]}")
-    return passed
+             body={"employee_no": "L002", "name": "小审", "role": "LOAN_CLERK", "password": "123456"})
 
 def check_text(expected, text):
     if isinstance(expected, list): return all(e in text for e in expected)
@@ -63,25 +68,29 @@ async def login(page, emp, pw):
     await page.wait_for_timeout(3000)
 
 async def click_menu(page, label):
-    """切换到指定菜单项，确保表单渲染完成才返回"""
-    # 先关闭可能残留的弹窗
+    """切换到指定菜单项，确保表单渲染完成才返回。任何异常返回 False（单场景失败不拖垮整个套件）"""
     try:
-        okb = page.locator("[data-act='ok']")
-        if await okb.is_visible(timeout=500): await okb.click()
-        await page.wait_for_timeout(300)
-    except: pass
-    # 等待菜单项就绪
-    await page.wait_for_selector("#menu li", state="visible", timeout=8000)
-    items = await page.locator("#menu li").all()
-    for it in items:
-        text = (await it.text_content() or "").strip()
-        if label in text:
-            await it.click()
-            # 等待表单字段出现（关键：表单渲染需要 JS 执行时间）
-            await page.wait_for_selector("#opform button[type=submit]", state="visible", timeout=8000)
-            await page.wait_for_timeout(1000)
-            return True
-    return False
+        # 先关闭可能残留的弹窗
+        try:
+            okb = page.locator("[data-act='ok']")
+            if await okb.is_visible(timeout=500): await okb.click()
+            await page.wait_for_timeout(300)
+        except: pass
+        # 等待菜单项就绪
+        await page.wait_for_selector("#menu li", state="attached", timeout=8000)
+        items = await page.locator("#menu li").all()
+        for it in items:
+            text = (await it.text_content() or "").strip()
+            if label in text:
+                await it.click()
+                # 等待表单字段出现（关键：表单渲染需要 JS 执行时间）
+                await page.wait_for_selector("#opform button[type=submit]", state="visible", timeout=8000)
+                await page.wait_for_timeout(1000)
+                return True
+        return False
+    except Exception as e:
+        print(f"    ⚠️ click_menu({label}) 失败: {type(e).__name__}")
+        return False
 
 async def fill(page, name, value):
     """填写表单字段。对于 select，用 page.select_option 定位 id"""
@@ -105,19 +114,29 @@ async def fill(page, name, value):
         return False
 
 async def submit(page):
-    """提交表单，处理确认弹窗"""
+    """提交表单，处理确认弹窗；轮询等待结果渲染（Render 响应有秒级抖动，固定 sleep 会读到空 banner）"""
     await page.locator("#content button[type=submit]").click()
     await page.wait_for_timeout(800)
-    # 查找确认弹窗的"确认无误，提交"按钮
-    for _ in range(3):  # 重试3次，处理慢渲染
+    # 确认弹窗（资金类 CONFIRM_OPS 才有）：短等两轮，非弹窗操作不再空耗 15 秒
+    for _ in range(2):
         try:
             okb = page.locator("[data-act='ok']")
-            await okb.wait_for(state="visible", timeout=5000)
+            await okb.wait_for(state="visible", timeout=2500)
             await okb.click()
             break
         except:
-            await page.wait_for_timeout(1000)
-    await page.wait_for_timeout(3000)
+            pass
+    # 等 banner 或 result 出现内容（最长 20s），出现即返回
+    for _ in range(20):
+        try:
+            b = (await page.locator("#banner").text_content() or "").strip()
+            rs = (await page.locator("#result").text_content() or "").strip()
+            if len(b) > 2 or len(rs) > 2:
+                break
+        except:
+            pass
+        await page.wait_for_timeout(1000)
+    await page.wait_for_timeout(500)
 
 async def get_page_text(page):
     """读取页面展示给用户的文字（banner + result + content）"""
@@ -137,6 +156,15 @@ async def run_all():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         page.set_default_timeout(15000)
+
+        async def _cap_api(resp):  # 记录每个 API 响应，失败场景可直查后端实际返回
+            if "/api/" in resp.url:
+                try:
+                    body = (await resp.text())[:150]
+                except Exception:
+                    body = "<读取失败>"
+                API_LOG.append(f"{resp.status} {resp.url.split('.com', 1)[-1]} → {body}")
+        page.on("response", _cap_api)
 
         # === 等待 Render 冷启动 + 首页验证 ===
         print("等待服务就绪...")
@@ -336,6 +364,12 @@ async def run_all():
             r = await get_page_text(page)
             ok("储蓄", "S14c", "重复冲正被拒", "已被冲正" in r or "不可重复" in r, r[:100])
 
+        # S15: 账实对账（线上库有历史数据，不断言零差异，断言接口/渲染正常）
+        await click_menu(page, "账实对账")
+        await submit(page)
+        r = await get_page_text(page)
+        ok("储蓄", "S15", "账实对账执行并渲染", check_text(["对账完成", "核对账户数"], r), r[:120])
+
         # ==================== 贷款业务 (6流) ====================
         print("\n📋 贷款业务 6 流")
 
@@ -343,12 +377,13 @@ async def run_all():
         menu = await page.locator("#menu").text_content() or ""
         ok("贷款", "L00", "贷款员登录", "贷款申请" in menu)
 
-        # L01: 贷款申请→审批→放款（完整正向流程）
+        # L01: 贷款申请→审批→放款（完整正向流程；还款方式在申请时约定）
         await click_menu(page, "贷款申请办理")
         await fill(page, "ident", "110101199203054321")  # 李四
         await fill(page, "loan_type", "个人消费贷")
         await fill(page, "amount", "50000")
         await fill(page, "term_months", "12")
+        await fill(page, "repay_method", "等额本息")
         await fill(page, "purpose", "旅游消费")
         await submit(page)
         r = await get_page_text(page)
@@ -359,6 +394,11 @@ async def run_all():
         if contract_no:
             # L02a: 审贷分离负例——申请经办人 L001 自审被拦截
             await click_menu(page, "审核与审批")
+            for _ in range(10):  # footerLoad 异步拉取待办列表（Render 首次查询可能数秒）
+                r = await page.locator("#content").text_content() or ""
+                if "待审批" in r: break
+                await page.wait_for_timeout(1000)
+            ok("贷款", "L02f", "审批页自动展示待审批列表", "待审批" in r and contract_no in r, r[:100])
             await fill(page, "contract_no", contract_no)
             await fill(page, "decision", "APPROVED")
             await fill(page, "interest_rate", "0.045")
@@ -374,14 +414,17 @@ async def run_all():
             await fill(page, "decision", "APPROVED")
             await fill(page, "approved_amount", "50000")
             await fill(page, "interest_rate", "0.045")
-            await fill(page, "term_months", "12")
-            await fill(page, "repay_method", "等额本息")
             await submit(page)
             r = await get_page_text(page)
             ok("贷款", "L02", "审批通过(L002复核·双工号)", check_text(["审批完成","已批复"], r), r[:100])
 
             # L03a: 审贷分离负例——审批人 L002 放款被拦截
             await click_menu(page, "放款处理")
+            for _ in range(10):  # footerLoad 异步拉取待放款列表
+                r = await page.locator("#content").text_content() or ""
+                if "待放款" in r: break
+                await page.wait_for_timeout(1000)
+            ok("贷款", "L03f", "放款页自动展示待放款列表", "待放款" in r and contract_no in r, r[:100])
             await fill(page, "contract_no", contract_no)
             await submit(page)
             r = await get_page_text(page)
@@ -404,13 +447,13 @@ async def run_all():
             r = await get_page_text(page)
             ok("贷款", "L04", "还款10000(瀑布冲抵)", check_text("还款成功", r), r[:100])
 
-            # L05: 提前结清（SETTLE：金额留空按试算扣款，减免未到期利息）
+            # L05: 大额自动提前结清（金额≥结清试算额→自动 SETTLE，减免未到期利息、仅扣试算额）
             await click_menu(page, "还款登记")
             await fill(page, "ident", contract_no)
-            await fill(page, "mode", "SETTLE")
+            await fill(page, "amount", "999999")
             await submit(page)
             r = await get_page_text(page)
-            ok("贷款", "L05", "提前结清(减免未到期利息)", check_text("已结清", r), r[:120])
+            ok("贷款", "L05", "大额自动提前结清", check_text("已结清", r), r[:120])
 
             # L06: 逾期查询
             await click_menu(page, "逾期查询")

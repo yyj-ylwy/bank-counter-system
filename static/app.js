@@ -303,7 +303,9 @@ function renderField(f) {
     input = `<input type="checkbox" id="${id}" class="cb">`;
   } else {
     const t = f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : f.type === 'password' ? 'password' : 'text';
-    const step = f.type === 'number' ? ' step="0.01"' : '';
+    // step 默认 any：金额精度由后端统一收敛（DECIMAL(18,2)）。写死 step="0.01" 时浏览器原生
+    // 校验会静默拦下 0.0435 这类多位小数（表单提交无任何反应），导致贷款审批的年利率填不进去
+    const step = f.type === 'number' ? ` step="${f.step || 'any'}"` : '';
     const maxlen = (t === 'text' || t === 'password') ? ` maxlength="${f.max || 64}"` : '';
     input = `<input type="${t}" id="${id}"${step}${maxlen} autocomplete="off">`;
   }
@@ -376,6 +378,7 @@ function handleResult(op, data) {
     } else if (data.data) {
       $('result').innerHTML = defaultResult(data.data);
     }
+    if (op.footerLoad) loadFooter(op);  // 提交后刷新待办列表（审批/放款
   } else {
     // 只给用户看中文说明；内部错误码(E-1等)降级为悬浮提示，供技术排查
     banner('err', data.message || '操作失败', data.error);
@@ -393,6 +396,8 @@ function banner(kind, msg, code) {
   if (!msg) { b.innerHTML = ''; return; }
   const title = code ? ` title="${esc(code)}"` : '';  // 错误码悬浮显示，不占正文
   b.innerHTML = `<div class="alert ${kind === 'ok' ? 'ok' : 'err'}"${title}>${esc(msg)}</div>`;
+  // 表单/待办列表较长时提交按钮在视口下方，结果渲染在顶部会看不见——自动滚回提示处
+  b.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // 会话过期统一处理：退回登录页并在登录框提示

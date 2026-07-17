@@ -219,6 +219,18 @@ const OPERATIONS = {
       result: d => kv({ '被冲流水': d.reversed_txn_no, '反向笔数': d.legs_reversed, '冲正后余额': money(d.balance) })
         + '<h4>红字流水</h4>' + savTxnTable(d.reversals),
     },
+    {
+      code: 'UC-110', name: '账实对账', method: 'GET', path: '/api/savings/reconcile',
+      hint: '核对每个储蓄账户：余额 = Σ入账流水 − Σ出账流水（已冲正交易成对排除）。差异为空即全库账平',
+      fields: [],
+      result: d => kv({ '核对账户数': d.checked, '账实相符': d.matched, '存在差异': d.mismatched.length, '暂不可核对': d.skipped.length })
+        + (d.mismatched.length ? '<h4>差异账户</h4>' + tbl(d.mismatched, [
+            { k: 'account_no', label: '账号' }, { k: 'balance', label: '账面余额', fmt: money },
+            { k: 'expected', label: '流水推算余额', fmt: money }, { k: 'diff', label: '差额', fmt: money },
+          ]) : '<p class="hint">✔ 全部账户账实相符</p>')
+        + (d.skipped.length ? '<h4>暂不可核对</h4>' + tbl(d.skipped, [{ k: 'account_no', label: '账号' }, { k: 'reason', label: '原因' }]) : '')
+        + (d.unknown_types.length ? `<p class="hint">存在未登记方向的流水类型：${d.unknown_types.join('、')}（请在对账方向表登记）</p>` : ''),
+    },
   ],
 
   // ================= 贷款业务员 =================
@@ -230,20 +242,35 @@ const OPERATIONS = {
         { n: 'loan_type', label: '贷款类型', type: 'select', options: ['个人消费贷', '住房贷款', '经营贷款', '汽车贷款'] },
         { n: 'amount', label: '申请金额', type: 'number', required: true },
         { n: 'term_months', label: '期限(月)', type: 'number', required: true },
+        { n: 'repay_method', label: '还款方式', type: 'select', options: ['等额本息', '等额本金', '一次性还本付息'], hint: '客户申请时约定，放款后按此生成还款计划' },
         { n: 'purpose', label: '借款用途' },
         { n: 'guarantee', label: '担保方式', type: 'select', options: [{ value: '', label: '（可不填）' }, '信用', '抵押', '质押', '保证'] },
       ],
-      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '金额': money(d.loan.amount) }),
+      result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '金额': money(d.loan.amount), '还款方式': d.loan.repay_method || '-' }),
     },
     {
       code: 'UC-202', name: '审核与审批', method: 'POST', path: '/api/loan/approve',
+      // 待办列表：打开页面自动列出待审核/待补件申请，对照列表填合同号逐笔审批
+      footerLoad: {
+        path: '/api/loan/query?status=PENDING,SUPPLEMENT',
+        render: d => '<h4>待审批列表</h4>' + (d.loans.length ? tbl(d.loans, [
+          { k: 'contract_no', label: '合同号' },
+          { k: 'customer', label: '客户', fmt: c => c ? c.name : '-' },
+          { k: 'loan_type', label: '类型' },
+          { k: 'amount', label: '申请金额', fmt: money },
+          { k: 'term_months', label: '期限(月)' },
+          { k: 'repay_method', label: '还款方式' },
+          { k: 'status_label', label: '状态' },
+          { k: 'purpose', label: '用途' },
+          { k: 'created_at', label: '申请时间' },
+        ]) + '<p class="hint">审核职权 = 结论 + 风险定价：批准金额可核减（留空=按申请额）、年利率可在授权内浮动（留空=挂牌利率）；期限与还款方式按客户申请执行。审贷分离：申请经办人不得审批本笔。</p>'
+          : '<p class="hint">当前没有待审批的贷款申请</p>'),
+      },
       fields: [
         { n: 'contract_no', label: '合同号', required: true },
         { n: 'decision', label: '审批结论', type: 'select', options: [{ value: '', label: '请选择审批结论' }, { value: 'APPROVED', label: '通过' }, { value: 'REJECTED', label: '拒绝' }, { value: 'SUPPLEMENT', label: '待补件' }] },
-        { n: 'approved_amount', label: '批准金额', type: 'number', hint: '仅通过时填写' },
-        { n: 'interest_rate', label: '年利率', type: 'number', hint: '仅通过时填；小数如 0.0435=4.35%，留空用系统默认' },
-        { n: 'term_months', label: '期限（月）', type: 'number', hint: '仅通过时填' },
-        { n: 'repay_method', label: '还款方式', type: 'select', options: [{ value: '', label: '默认（等额本息）' }, '等额本息', '等额本金', '一次性还本付息'], hint: '决定放款时生成的还款计划' },
+        { n: 'approved_amount', label: '批准金额', type: 'number', hint: '可核减；留空 = 按申请金额' },
+        { n: 'interest_rate', label: '年利率', type: 'number', hint: '小数如 0.0435=4.35%；留空 = 系统挂牌利率' },
         { n: 'reason', label: '拒绝/补件原因', hint: '仅拒绝或待补件时填写' },
       ],
       result: d => {
@@ -256,6 +283,21 @@ const OPERATIONS = {
     },
     {
       code: 'UC-203', name: '放款处理', method: 'POST', path: '/api/loan/disburse',
+      // 待办列表：已批复待放款的合同（审贷分离：放款人不得是本笔审批人）
+      footerLoad: {
+        path: '/api/loan/query?status=APPROVED',
+        render: d => '<h4>待放款列表</h4>' + (d.loans.length ? tbl(d.loans, [
+          { k: 'contract_no', label: '合同号' },
+          { k: 'customer', label: '客户', fmt: c => c ? c.name : '-' },
+          { k: 'loan_type', label: '类型' },
+          { k: 'amount', label: '批准金额', fmt: money },
+          { k: 'interest_rate', label: '年利率', fmt: pct },
+          { k: 'term_months', label: '期限(月)' },
+          { k: 'repay_method', label: '还款方式' },
+          { k: 'approved_by_no', label: '审批人' },
+        ]) + '<p class="hint">审贷分离：本笔审批人不得执行放款；放款成功即按还款方式生成逐期还款计划。</p>'
+          : '<p class="hint">当前没有已批复待放款的贷款</p>'),
+      },
       fields: [{ n: 'contract_no', label: '合同号', required: true }],
       result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余本金': money(d.loan.balance), '还款方式': d.loan.repay_method || '-', '到期日': d.loan.due_date, '放款人': d.loan.disbursed_by_no || '-' })
         + loanPlanSummary(d.loan)
@@ -265,10 +307,8 @@ const OPERATIONS = {
       code: 'UC-204', name: '还款登记', method: 'POST', path: '/api/loan/repay',
       fields: [
         { n: 'ident', label: '身份标识', required: true, hint: '证件号/邮箱/手机号/账号/卡号/合同号，任填其一' },
-        { n: 'mode', label: '还款方式', type: 'select', options: [{ value: 'NORMAL', label: '正常还款（罚息→利息→本金 逐期冲抵）' }, { value: 'SETTLE', label: '提前结清（减免未到期利息）' }] },
-        { n: 'amount', label: '还款金额', type: 'number', hint: '提前结清可留空，按试算金额自动扣款' },
+        { n: 'amount', label: '还款金额', type: 'number', required: true, hint: '金额不小于「提前结清应付」时自动按提前结清办理（减免未到期利息，仅扣试算额）' },
       ],
-      validate: v => (v.mode !== 'SETTLE' && !v.amount) ? '正常还款请填写还款金额' : null,
       result: d => kv({ '合同号': d.loan.contract_no, '状态': d.loan.status_label, '剩余本金': money(d.loan.balance), '剩余利息': money(d.loan.interest_remaining || 0), '应收罚息': money(d.loan.penalty_due), '本次流水': d.txn ? d.txn.txn_no : '-' })
         + loanPlanSummary(d.loan)
         + (d.loan.schedule && d.loan.schedule.length ? '<h4>还款计划</h4>' + schedTable(d.loan.schedule) : ''),

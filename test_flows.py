@@ -227,7 +227,7 @@ step("F2-01", "F2", "贷款员登录", None, check_success(), token=t_l)
 # 审贷分离：申请(L001)/审批(L002)/放款(L001) 须不同工号。幂等创建 L002（已存在返回 E-1 忽略）
 t_adm = login("admin", "admin123")[0]
 api("POST", "/api/admin/users", token=t_adm,
-    body={"employee_no": "L002", "name": "贷款复核员", "role": "LOAN_CLERK", "password": "123456"})
+    body={"employee_no": "L002", "name": "小审", "role": "LOAN_CLERK", "password": "123456"})
 t_l2 = login("L002", "123456")[0]
 
 time.sleep(2)

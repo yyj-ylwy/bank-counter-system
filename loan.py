@@ -105,12 +105,15 @@ def apply():
     loan_type = (d.get("loan_type") or "").strip()
     amount = D(d.get("amount") or 0)
     term = as_int(d.get("term_months"))
+    repay_method = (d.get("repay_method") or "等额本息").strip()  # 还款方式由客户申请时约定
     if loan_type not in C.LOAN_TYPES:  # E-2 类型非法
         return fail("E-2", "贷款类型非法")
     if amount <= 0 or amount > C.LOAN_AMOUNT_MAX:  # E-2 金额范围
         return fail("E-2", f"申请金额须大于 0 且不超过 {C.LOAN_AMOUNT_MAX:,}")
     if term <= 0 or term > C.LOAN_TERM_MAX:  # E-2 期限范围（防到期日计算溢出）
         return fail("E-2", f"期限须为 1~{C.LOAN_TERM_MAX} 个月")
+    if repay_method not in STRATEGIES:  # E-2 还款方式非法
+        return fail("E-2", "还款方式非法（等额本息/等额本金/一次性还本付息）")
 
     # E-1 黑名单 / 逾期（按期认定，与还款/罚息同口径）
     if cust["status"] == C.CUSTOMER_BLACKLIST:
@@ -132,6 +135,7 @@ def apply():
         "balance": m(0),
         "interest_rate": None,
         "term_months": term,
+        "repay_method": repay_method,
         "status": C.LOAN_PENDING,
         "purpose": (d.get("purpose") or "").strip(),
         "guarantee": (d.get("guarantee") or "").strip(),
@@ -172,7 +176,8 @@ def approve():
         rate = dec(d["interest_rate"]) if d.get("interest_rate") not in (None, "") \
             else get_param_dec(db, C.P_LOAN_RATE, "0.0435")
         term = as_int(d["term_months"]) if d.get("term_months") not in (None, "") else int(ln["term_months"])
-        method = (d.get("repay_method") or "等额本息").strip()
+        # 还款方式默认沿用客户申请时的约定；API 仍可覆写（界面已按职责精简，不再展示）
+        method = (d.get("repay_method") or "").strip() or (ln.get("repay_method") or "等额本息")
         if appr_amt <= 0 or appr_amt > C.LOAN_AMOUNT_MAX:
             return fail("E-VAL", f"批准金额须大于 0 且不超过 {C.LOAN_AMOUNT_MAX:,}", 400)
         if rate < 0 or rate > 1:  # 年利率为小数，上限 1（100%），防误填成 4.35 这类整数
@@ -272,12 +277,12 @@ def _acc_no(db, ln):
 def repay():
     d = _body()
     ident = (d.get("ident") or "").strip()
-    mode = (d.get("mode") or "NORMAL").strip().upper()  # NORMAL 按期/提前还款；SETTLE 一次性提前结清
     amount = D(d.get("amount") or 0)
     request_id = (d.get("request_id") or "").strip()  # 幂等键（选填）
-    if mode not in ("NORMAL", "SETTLE"):
-        return fail("E-OP", "还款方式非法（NORMAL/SETTLE）", 400)
-    if mode == "NORMAL" and amount <= 0:
+    _mode_raw = (d.get("mode") or "").strip().upper()  # 留空=自动判定；仍可传 NORMAL/SETTLE 显式指定
+    if _mode_raw not in ("", "NORMAL", "SETTLE"):
+        return fail("E-OP", "还款方式非法（留空自动判定，或 NORMAL/SETTLE）", 400)
+    if amount <= 0:
         return fail("E-AMT", "还款金额必须大于零", 400)
 
     db = get_db()
@@ -313,7 +318,9 @@ def repay():
             return None, ("E-3", "缺少逾期罚息参数，请管理员先维护 LOAN_OVERDUE_RATE")
         # 增量计提罚息（按期、日历日、水位不重不漏），罚息单列不并入本金
         penalty, new_asof = PenaltyCalculator.accrue(loan, raw_overdue_rate)
-        if mode == "SETTLE":  # 结清试算即应扣金额：罚息 + 到期未还利息 + 全部剩余本金
+        # 判定还款模式：传了 SETTLE 显式结清，传了 NORMAL 显式瀑布，留空自动判定
+        mode = _mode_raw or ("SETTLE" if amount >= settle_quote(loan, penalty) else "NORMAL")
+        if mode == "SETTLE":
             pay_amount, alloc = RepaymentAllocator.allocate_settle(loan["schedule"], penalty)
             if pay_amount <= 0:
                 return None, ("E-2", "该贷款已无应还款项")
@@ -465,7 +472,9 @@ def query():
             cust = find_customer(db, ident=ident)
             q["customer_id"] = cust["_id"] if cust else None
     if request.args.get("status"):
-        q["status"] = request.args["status"].strip().upper()
+        # 支持逗号分隔多状态（如审批页待办列表 status=PENDING,SUPPLEMENT 一次取回）
+        sts = [s.strip().upper() for s in request.args["status"].split(",") if s.strip()]
+        q["status"] = sts[0] if len(sts) == 1 else {"$in": sts}
     if request.args.get("loan_type"):
         q["loan_type"] = request.args["loan_type"].strip()
     rng = parse_date_range(request.args.get("start"), request.args.get("end"))

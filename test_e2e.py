@@ -66,7 +66,7 @@ def E(r): return r.get("error")
 def OK(r): return r.get("success") is True
 
 # 审贷分离（maker-checker）需要第二名贷款业务员：申请/审批/放款须不同人。幂等创建 L002（已存在返回 E-1 忽略）
-api("POST", "/api/admin/users", AD, json={"employee_no": "L002", "name": "贷款复核员",
+api("POST", "/api/admin/users", AD, json={"employee_no": "L002", "name": "小审",
                                           "role": C.ROLE_LOAN, "password": "123456"})
 L2 = login("L002", "123456")
 
@@ -286,6 +286,11 @@ def t_loan():
     ok("202 利率>1→E-VAL [边界]", E(approve(new_loan(), interest_rate="4.35")) == "E-VAL")
     ok("202 期限361→E-VAL [边界]", E(approve(new_loan(), term_months="361")) == "E-VAL")
     ok("202 还款方式非法→E-VAL [判定]", E(approve(new_loan(), repay_method="先息后本")) == "E-VAL")
+    # 还款方式由客户申请时约定，审批不传则沿用申请值（界面已按职责精简）
+    ok("201 申请还款方式非法→E-2 [判定]", E(api("POST", "/api/loan/apply", L, json={"ident": bid, "loan_type": "个人消费贷", "amount": "1000", "term_months": "12", "repay_method": "先息后本"})) == "E-2")
+    r_eq = api("POST", "/api/loan/apply", L, json={"ident": bid, "loan_type": "个人消费贷", "amount": "1000", "term_months": "12", "repay_method": "等额本金"})
+    r_eqa = approve(r_eq["data"]["loan"]["contract_no"])
+    ok("202 审批默认沿用申请约定的还款方式 [规则]", OK(r_eqa) and r_eqa["data"]["loan"]["repay_method"] == "等额本金")
     ok("202 拒绝成功 [判定]", OK(api("POST", "/api/loan/approve", L2, json={"contract_no": new_loan(), "decision": "REJECTED", "reason": "资料不足"})))
     ln_sup = new_loan(); api("POST", "/api/loan/approve", L2, json={"contract_no": ln_sup, "decision": "SUPPLEMENT", "reason": "补件"})
     ok("202 待补件成功 [判定]", True)
@@ -314,7 +319,7 @@ def t_loan():
     # UC-204 还款（瀑布：罚息→利息→本金；SETTLE 提前结清减免未到期利息；request_id 幂等）
     ok("204 金额0→E-AMT [边界]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "0"})) == "E-AMT")
     ok("204 mode非法→E-OP [判定]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1", "mode": "HALF"})) == "E-OP")
-    ok("204 超额还款→E-3 [边界]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "999999"})) == "E-3")
+    ok("204 超额还款(显式NORMAL)→E-3 [边界]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "999999", "mode": "NORMAL"})) == "E-3")
     # base 账户放款后余额=50000，还款需从账户扣；先存够
     api("POST", "/api/savings/deposit", S, json={"ident": base["account_no"], "amount": "60000"})
     r204 = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "10000"})
@@ -329,10 +334,12 @@ def t_loan():
     ok("204 幂等重放返回原流水 [规则]", OK(r2) and r2["data"].get("duplicate") is True)
     ok("204 幂等重放贷款余额不变 [金额]", abs(r2["data"]["loan"]["balance"] - r1["data"]["loan"]["balance"]) < 0.01)
     rq_settle = f"rq-settle-{uid()}"
-    rs = api("POST", "/api/loan/repay", L, json={"ident": bid, "mode": "SETTLE", "request_id": rq_settle})
-    ok("204 提前结清成功→PAID_OFF [正常流]", OK(rs) and rs["data"]["loan"]["status"] == C.LOAN_PAID_OFF)
+    # 金额 ≥ 结清试算额 → 自动按提前结清办理（不再需要显式 mode），且仅扣试算额
+    rs = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "999999", "request_id": rq_settle})
+    ok("204 大额自动提前结清→PAID_OFF [规则]", OK(rs) and rs["data"]["loan"]["status"] == C.LOAN_PAID_OFF)
+    ok("204 自动结清仅扣试算额(非填入金额) [金额]", OK(rs) and rs["data"]["txn"]["amount"] < 999999)
     ok("204 结清减免未到期利息 [规则]", sum(i["waived_interest"] for i in rs["data"]["loan"]["schedule"]) > 0)
-    rs2 = api("POST", "/api/loan/repay", L, json={"ident": bid, "mode": "SETTLE", "request_id": rq_settle})
+    rs2 = api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "999999", "request_id": rq_settle})
     ok("204 结清后幂等重放仍返回原结果(非已结清报错) [规则]", OK(rs2) and rs2["data"].get("duplicate") is True)
     ok("204 已结清再还→E-NOLOAN [判定]", E(api("POST", "/api/loan/repay", L, json={"ident": bid, "amount": "1"})) == "E-NOLOAN")
 
@@ -368,6 +375,10 @@ def t_loan():
     # UC-206 查询统计（统一 ident）
     ok("206 日期非法→E-DATE [判定]", E(api("GET", "/api/loan/query", L, query={"start": "2026/1/1"})) == "E-DATE")
     ok("206 组合条件查询 [正常流]", OK(api("GET", "/api/loan/query", L, query={"ident": bid, "status": "PAID_OFF"})))
+    # 审批/放款待办列表复用本接口：状态支持逗号多选
+    r206m = api("GET", "/api/loan/query", L, query={"status": "PENDING,SUPPLEMENT"})
+    ok("206 状态逗号多选(待审批列表) [规则]", OK(r206m) and len(r206m["data"]["loans"]) >= 1
+       and all(l["status"] in (C.LOAN_PENDING, C.LOAN_SUPPLEMENT) for l in r206m["data"]["loans"]))
     ok("206 无过滤全表统计 [正常流]", OK(api("GET", "/api/loan/query", L, query={})))
 
 
@@ -730,10 +741,25 @@ def t_robust():
     ok("无效令牌→401 [安全]", cl.get("/api/me", headers={"Authorization": "Bearer forged.token.xyz"}).status_code == 401)
 
 
+# ==================== 终局不变式：全库账实对账 ====================
+def t_reconcile():
+    """全部用例跑完后执行 UC-110 对账：任何冲正/幂等/原子记账的 bug 都会在这里现形。
+    skipped（信用卡多渠道还款账户）允许存在；mismatched 必须为 0——全库账是平的。"""
+    print("== 终局不变式：账实对账 ==")
+    r = api("GET", "/api/savings/reconcile", S)
+    ok("110 对账接口成功 [正常流]", OK(r))
+    ok("110 全库账实相符(差异=0) [不变式]", OK(r) and r["data"]["mismatched"] == [])
+    ok("110 无未登记方向的流水类型 [规则]", OK(r) and r["data"]["unknown_types"] == [])
+    if OK(r):
+        print(f"   核对 {r['data']['checked']} 户：相符 {r['data']['matched']}，"
+              f"跳过 {len(r['data']['skipped'])}（{r['message']}）")
+
+
 if __name__ == "__main__":
     try:
         t_savings(); t_loan(); t_forex(); t_creditcard(); t_card_benefits_ui()
         t_admin(); t_auth(); t_robust()
+        t_reconcile()  # 终局：全库账实对账（不变式验证）
     finally:
         get_client().drop_database("bank_counter_e2etest")  # 删除一次性库
     print(f"\n==== 结果：{_p} 通过 / {_f} 失败（共 {_p + _f} 条断言）====")
