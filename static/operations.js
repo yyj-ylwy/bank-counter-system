@@ -224,8 +224,21 @@ const OPERATIONS = {
     {
       code: 'UC-109', name: '当日冲正', method: 'POST', path: '/api/savings/reverse',
       hint: '柜员错账纠正：仅限当日成功流水；转账冲正自动连带转入/手续费腿一并反向',
+      // 待办列表：打开页面自动列出当日可冲正流水，对照填流水号办理（办完即从列表消失）
+      footerLoad: {
+        path: '/api/savings/reversible',
+        render: d => '<h4>今日可冲正流水</h4>' + (d.txns.length ? tbl(d.txns, [
+          { k: 'txn_no', label: '流水号' },
+          { k: 'business_label', label: '类型' },
+          { k: 'amount', label: '金额', fmt: money },
+          { k: 'account_no', label: '账号' },
+          { k: 'customer_name', label: '客户' },
+          { k: 'txn_time', label: '时间' },
+        ]) + '<p class="hint">转入/手续费流水不单独列出，随对应的转出流水整体冲正。</p>'
+          : `<p class="hint">${d.hint || '今日暂无可冲正的流水'}</p>`),
+      },
       fields: [
-        { n: 'txn_no', label: '流水号', required: true, hint: '存款/取款/转账（转出）流水号，可在 UC-105 明细中查到' },
+        { n: 'txn_no', label: '流水号', required: true, hint: '对照下方列表填写（也可在 UC-105 明细中查）' },
         { n: 'reason', label: '冲正原因', required: true, hint: '必填，供审计追溯' },
       ],
       result: d => kv({ '被冲流水': d.reversed_txn_no, '反向笔数': d.legs_reversed, '冲正后余额': money(d.balance) })

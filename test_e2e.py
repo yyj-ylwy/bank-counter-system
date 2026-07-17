@@ -223,8 +223,13 @@ def t_savings():
     ok("109 流水不存在→E-REV [判定]", E(api("POST", "/api/savings/reverse", S, json={"txn_no": "T00000000000000", "reason": "x"})) == "E-REV")
     rd = api("POST", "/api/savings/deposit", S, json={"ident": rv["account_no"], "amount": "200"})
     dep_no = rd["data"]["txn"]["txn_no"]
+    # 冲正页待办列表：当日可冲正流水应含这笔存款；冲正后应从列表消失
+    rl = api("GET", "/api/savings/reversible", S)
+    ok("109 待冲正列表含当日流水 [规则]", OK(rl) and any(t["txn_no"] == dep_no for t in rl["data"]["txns"]))
     r109 = api("POST", "/api/savings/reverse", S, json={"txn_no": dep_no, "reason": "柜员误录金额"})
     ok("109 存款冲正成功且余额回退 [金额]", OK(r109) and abs(r109["data"]["balance"] - 1000.0) < 0.01)
+    rl2 = api("GET", "/api/savings/reversible", S)
+    ok("109 冲正后从待办列表消失 [规则]", OK(rl2) and not any(t["txn_no"] == dep_no for t in rl2["data"]["txns"]))
     ok("109 重复冲正→E-REV [判定]", E(api("POST", "/api/savings/reverse", S, json={"txn_no": dep_no, "reason": "再冲"})) == "E-REV")
     rw = api("POST", "/api/savings/withdraw", S, json={"ident": rv["account_no"], "amount": "300"})
     r109w = api("POST", "/api/savings/reverse", S, json={"txn_no": rw["data"]["txn"]["txn_no"], "reason": "误取"})

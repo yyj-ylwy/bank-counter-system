@@ -352,6 +352,11 @@ async def run_all():
         ok("储蓄", "S14a", f"存款并取得流水号({txn_no})", check_text("存款成功", r) and bool(txn_no), r[:80])
         if txn_no:
             await click_menu(page, "当日冲正")
+            for _ in range(10):  # footerLoad 异步拉取当日可冲正流水
+                r = await page.locator("#content").text_content() or ""
+                if "可冲正流水" in r: break
+                await page.wait_for_timeout(1000)
+            ok("储蓄", "S14f", "冲正页自动展示当日流水", "可冲正流水" in r and txn_no in r, r[:100])
             await fill(page, "txn_no", txn_no)
             await fill(page, "reason", "柜员误录金额")
             await submit(page)
