@@ -3,6 +3,9 @@
 - 静态前端从 static/ 目录以同源方式提供（无需 CORS）。
 - 自定义 JSON 编码器，让 Mongo 的 ObjectId / datetime / Decimal128 能直接序列化。
 - 启动时建索引 + 幂等种子数据。
+
+【答辩讲解】应用工厂：把 7 个业务蓝图拼装起来、启动时自动建索引和灌种子数据。关键点：自定义 JSON 编码器
+让 MongoDB 的对象ID/时间/金额自动转成前端能读的格式；统一错误处理——用户乱输数字返回 400，其它意外异常返回 500 但不泄露堆栈。
 """
 from datetime import datetime
 from decimal import Decimal

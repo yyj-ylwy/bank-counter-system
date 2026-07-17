@@ -4,6 +4,13 @@
       持仓盈亏(累计 + 日/周/月/年价格变动)、管理员产品维护。
 用 seed 写入的当日行情，不走外网。使用一次性库 bank_invest_test，测完自动删除。
 运行：python test_invest.py
+
+【答辩讲解·测试】按《第七章》做白盒+黑盒。白盒：逻辑覆盖(test_logic.py)、基本路径(test_extra.py，画控制流图/算圈复杂度/每条独立路径一用例)；
+黑盒：条件组合覆盖、判定表、边界值(test_e2e.py/test_invest.py，每条断言标了类型)；整体覆盖率 82%。
+现场演示：① 敲 python test_invest.py，当场看断言逐条 PASS、最后"43通过/0失败"；
+② 指输出说"每条标了[判定]/[条件]/[组合]/[边界]，对应第七章覆盖方法"；
+③ 举例——申购放行判定表:未测评/风险不匹配/余额不足/全满足四条规则各一个用例；
+④ 再跑 python test_logic.py、python test_extra.py，可开 82% 覆盖率 HTML 报告。
 """
 import os
 os.environ.setdefault("DB_NAME", "bank_invest_test")

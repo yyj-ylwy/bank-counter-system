@@ -2,6 +2,9 @@
 
 令牌用 itsdangerous（Flask 自带依赖）签发，无需额外库。前端登录后把 token
 放在 Authorization: Bearer <token> 头里发送。
+
+【答辩讲解】用签名令牌验证身份，令牌里带一个版本号——一改密码或停用账号，版本号自增、旧令牌立刻失效，
+不用在服务端存黑名单。每个接口顶上加一行 @require_role(角色) 就完成登录+权限校验。
 """
 from functools import wraps
 
