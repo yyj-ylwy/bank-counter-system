@@ -11,6 +11,11 @@ ponytail: 教学模拟系统，未含分红再投/定投；区间盈亏为"价�
 【答辩讲解】在原有五个模块之外从零新增的完整业务：产品维护、每日行情、风险测评、基金股票申赎、持仓盈亏、交易记录。
 亮点：行情自动接入(含备用数据源)、A股真实费率、合规风控(测评有效期/风险不匹配确认书)、T+1 到账状态流转。
 从数据模型、外部接口、金额精度到事务原子性，是我对整套架构理解的综合体现。
+
+本文件关键函数(UC-601~610)：upsert_product/products/product_lookup(产品维护+回填)、
+quote/refresh_prices + 行情拉取 _fetch_fund_price/_fetch_fund_backup/_fetch_us_stock_price/price_for_trade(行情，含备用源)、
+assess(风险测评)、buy/buy_fees(申购含费)、sell/sell_fees(赎回含费/货基快赎)、
+confirm_settlements(T+1确认到账)、transactions(交易记录)、holdings(持仓盈亏)。
 """
 import json
 import re

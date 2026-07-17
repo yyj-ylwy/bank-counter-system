@@ -8,6 +8,9 @@
 - 探测=捕获特定错误信息；降级=同一份业务代码传 None 再跑，业务只写一份、两种模式复用。
 - 红线：绝不能把"某操作在事务内非法"(如 code 263)误当成"不支持事务"，否则整进程永久无事务、破坏原子性，所以只严格白名单匹配那三句环境级报错。
 - 线上 Atlas 是副本集、支持事务就真生效；本地单机不支持就自动降级演示。
+
+本文件关键函数：get_client/get_db(连接)、next_seq/gen_no(自增编号)、run_in_transaction(事务)、
+txn_supported(探测事务支持)、ensure_indexes(建索引)、ping(健康检查)。
 """
 from pymongo import MongoClient, ASCENDING, ReturnDocument
 from pymongo.errors import OperationFailure, ConnectionFailure

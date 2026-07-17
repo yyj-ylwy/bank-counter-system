@@ -4,6 +4,12 @@ UC-INC-3 流水登记、UC-INC-4 审计日志）。所有子系统复用这里�
 【答辩讲解】所有模块都要用的公共逻辑抽这里：①金额三件套——算用D、存用m、读用dec，全程 Decimal128 不碰浮点；
 ②四个 include 公共用例——身份核验(动钱前确认是本人)、账户校验(状态+余额)、流水登记(每笔留流水,保证余额=流水净额)、审计日志(谁做了什么全留痕)；
 ③统一定位——一个"身份标识"(证件号/手机号/账号任一)就能定位客户的账户/卡/贷款，5 个模块都复用。
+
+本文件关键函数：金额 D/D6/m/dec/as_int；响应 ok/fail；编号 new_customer_no…new_txn_no/oid；
+身份核验 norm_id/validate_id_no/validate_phone/validate_email/find_customer/match_identity/check_identity；
+统一定位 resolve_account_no/resolve_credit_card/resolve_loan/resolve_fx_account；
+账户校验 check_account；流水 write_txn；审计 write_audit；参数 get_param/get_param_dec；
+序列化 customer_view/account_view/txn_view/parse_date_range。
 """
 import re
 from datetime import datetime, timedelta

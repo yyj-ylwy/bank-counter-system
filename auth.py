@@ -5,6 +5,9 @@
 
 【答辩讲解】用签名令牌验证身份，令牌里带一个版本号——一改密码或停用账号，版本号自增、旧令牌立刻失效，
 不用在服务端存黑名单。每个接口顶上加一行 @require_role(角色) 就完成登录+权限校验。
+
+本文件关键函数：issue_token/load_user_from_token(签发/验令牌)、require_role(权限装饰器)、
+login(登录)、change_password(改密)、me/my_activity(查本人信息与经办记录)。
 """
 from functools import wraps
 

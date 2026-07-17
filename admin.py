@@ -2,6 +2,10 @@
 
 【答辩讲解】管理员后台四块：用户权限(自锁保护、必须保留一名管理员)、参数维护、日志审计、数据备份恢复。
 恢复做得最严——二次确认 + 全程事务 + 记录数和外键完整性校验 + 失败自动回滚。
+
+本文件关键函数：UC-501 list_users/create_user/update_user(用户权限)；
+UC-502 list_params/upsert_param/set_card_limit(参数维护+卡种额度)；UC-503 audit_query(日志审计)；
+UC-504 backup/restore + _integrity_scan(备份恢复+外键完整性校验)。
 """
 import hashlib
 import math
