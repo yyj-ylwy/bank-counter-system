@@ -326,6 +326,21 @@ def reverse():
     return ok(res, f"冲正成功，共反向 {res['legs_reversed']} 条流水")
 
 
+@bp.get("/reversible")
+@clerk
+def reversible():
+    """冲正页待办列表：当日可冲正流水（成功/存取转类型/未被冲正），附账号与客户名。"""
+    db = get_db()
+    rows = []
+    for t in ReversalService.list_today(db):
+        acc = db.account.find_one({"_id": t.get("account_id")}) if t.get("account_id") else None
+        cust = db.customer.find_one({"_id": t.get("customer_id")}) if t.get("customer_id") else None
+        rows.append({**txn_view(t),
+                     "account_no": acc["account_no"] if acc else "-",
+                     "customer_name": cust["name"] if cust else "-"})
+    return ok({"txns": rows, "hint": None if rows else "今日暂无可冲正的流水"})
+
+
 # ---------- UC-105 账户/明细查询 ----------
 @bp.get("/query")
 @clerk

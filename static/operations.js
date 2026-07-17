@@ -224,8 +224,21 @@ const OPERATIONS = {
     {
       code: 'UC-109', name: '当日冲正', method: 'POST', path: '/api/savings/reverse',
       hint: '柜员错账纠正：仅限当日成功流水；转账冲正自动连带转入/手续费腿一并反向',
+      // 待办列表：打开页面自动列出当日可冲正流水，对照填流水号办理（办完即从列表消失）
+      footerLoad: {
+        path: '/api/savings/reversible',
+        render: d => '<h4>今日可冲正流水</h4>' + (d.txns.length ? tbl(d.txns, [
+          { k: 'txn_no', label: '流水号' },
+          { k: 'business_label', label: '类型' },
+          { k: 'amount', label: '金额', fmt: money },
+          { k: 'account_no', label: '账号' },
+          { k: 'customer_name', label: '客户' },
+          { k: 'txn_time', label: '时间' },
+        ]) + '<p class="hint">转入/手续费流水不单独列出，随对应的转出流水整体冲正。</p>'
+          : `<p class="hint">${d.hint || '今日暂无可冲正的流水'}</p>`),
+      },
       fields: [
-        { n: 'txn_no', label: '流水号', required: true, hint: '存款/取款/转账（转出）流水号，可在 UC-105 明细中查到' },
+        { n: 'txn_no', label: '流水号', required: true, hint: '对照下方列表填写（也可在 UC-105 明细中查）' },
         { n: 'reason', label: '冲正原因', required: true, hint: '必填，供审计追溯' },
       ],
       result: d => kv({ '被冲流水': d.reversed_txn_no, '反向笔数': d.legs_reversed, '冲正后余额': money(d.balance) })
@@ -486,6 +499,22 @@ const OPERATIONS = {
         { n: 'new_limit', label: '新授信额度', type: 'number', required: true, hint: '须高于当前额度；审批时不得超过存款的规定比例（见系统参数「提额上限占存款比例」）' },
         { n: 'reason', label: '申请理由' },
       ],
+      // 填身份+选卡种后点「查询当前额度」，按行展示该卡当前授信额度与剩余可用额度（只读，供参考后再填新额度）
+      lookup: {
+        byField: 'card_type',
+        btnLabel: '查询当前额度',
+        path: '/api/creditcard/query',
+        query: v => ({ ident: v.ident }),   // 凭身份查该客户名下卡，再按卡种取唯一一张
+        find: (d, key) => (d.cards || []).find(c => c.card_type === key),
+        okMsg: '已查出该卡当前额度，请在下方「新授信额度」填写高于当前额度的金额后提交',
+        render: c => {
+          const u = CUR_UNIT[c.currency] || c.currency;
+          return kvRows([
+            ['当前卡种额度', `${esc(money(c.credit_limit))} ${esc(u)}`],
+            ['当前剩余额度', `${esc(money(c.available_limit))} ${esc(u)}　<span class="hint-inline">已用 ${esc(money(c.used))} ${esc(u)}</span>`],
+          ]);
+        },
+      },
       // 用当前生效的比例改写「新授信额度」字段提示；管理员改「提额上限占存款比例」后此处随之更新
       liveConfig: {
         path: '/api/creditcard/card-benefits',

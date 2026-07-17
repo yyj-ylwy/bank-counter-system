@@ -155,6 +155,16 @@ class ReversalService:
     原腿打 reversed/reversed_by 标记——不改共享的 status 枚举，其他子系统读流水不受影响。"""
 
     @staticmethod
+    def list_today(db, limit=50):
+        """当日可冲正流水（供冲正页待办列表）：成功、可冲类型、未被冲正，按时间倒序。
+        转入/手续费腿不单独列出（随转出腿整体冲正）。"""
+        start = now().replace(hour=0, minute=0, second=0, microsecond=0)
+        return list(db.business_transaction.find(
+            {"business_type": {"$in": list(_REVERSIBLE_TYPES)},
+             "status": C.TXN_STATUS_SUCCESS, "reversed": {"$ne": True},
+             "txn_time": {"$gte": start}}).sort("txn_time", -1).limit(limit))
+
+    @staticmethod
     def reverse(db, txn_no, reason, operator_id, session=None):
         """返回 (result_dict, error)；error 为 (code, msg) 或 None。"""
         t = db.business_transaction.find_one({"txn_no": (txn_no or "").strip()}, session=session)
