@@ -655,6 +655,21 @@ const OPERATIONS = {
       hint: '把到了确认日/到账日的申购/赎回单据，从「待确认/待到账」批量更新为「已确认/已到账」（演示 T+1 状态流转）',
       result: d => kv({ '份额已确认': d.confirmed + ' 笔', '资金已到账': d.settled + ' 笔' }),
     },
+    {
+      code: 'UC-610', name: '理财交易记录/交割单查询', method: 'GET', path: '/api/invest/transactions',
+      fields: [{ n: 'ident', label: '客户身份标识', required: true, hint: '证件号/邮箱/手机号/账号，任填其一' }],
+      hint: '看该客户每一笔申购/赎回的历史与状态（有没有到账/确认），与「持仓查询」互补。',
+      result: d => kv({ '客户': d.customer.name + '（' + d.customer.customer_no + '）', '待确认/待到账笔数': d.pending })
+        + (d.transactions.length ? tbl(d.transactions, [
+          { k: 'txn_time', label: '时间' }, { k: 'type', label: '类型' }, { k: 'product', label: '产品' },
+          { k: 'price_cny', label: '成交价', fmt: money }, { k: 'units', label: '份额' },
+          { k: 'amount', label: '金额(实付/实收)', fmt: money }, { k: 'fee', label: '手续费', fmt: money },
+          { k: 'settle_status', label: '受理状态' }, { k: 'expect_date', label: '确认/到账日', fmt: v => v || '-' },
+          { k: 'realized', label: '已实现盈亏', fmt: v => v == null ? '-' : money(v) },
+          { k: 'txn_no', label: '成交确认单号' },
+        ]) + '<p class="hint">申购到确认日、赎回到到账日后，用「UC-609 份额确认/资金到账」可把状态更新为"已确认/已到账"。</p>'
+          : `<p class="hint">${d.hint || '暂无交易记录'}</p>`),
+    },
   ],
 
   // ================= 系统管理员 =================

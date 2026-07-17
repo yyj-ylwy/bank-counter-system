@@ -145,6 +145,13 @@ def run():
     tt = dbx.business_transaction.find_one({"txn_no": bc["data"]["confirm_no"]})
     ok("609 确认后状态=份额已确认 [判定]", tt and tt.get("settle_status") == "份额已确认")
 
+    # UC-610 理财交易记录/交割单：列出客户申赎、带受理状态
+    tr = api("GET", "/api/invest/transactions", INV, query={"ident": cm["id_no"]})
+    ok("610 交易记录返回申赎明细 [正常流]", OK(tr) and len(tr["data"]["transactions"]) >= 2)
+    ok("610 每笔含受理状态 [判定]", all(r.get("settle_status") for r in tr["data"]["transactions"]))
+    ok("610 已确认单据状态可见 [组合]", any(r["settle_status"] == "份额已确认" for r in tr["data"]["transactions"]))
+    ok("610 无交易客户→空列表 [边界]", OK(api("GET", "/api/invest/transactions", INV, query={"ident": open_acct()["id_no"]})))
+
     # ⑤ 费率与披露字段：货基标志、管理费/托管费/投资范围
     pl = api("GET", "/api/invest/products", INV)
     p198 = next((x for x in pl["data"]["products"] if x["code"] == "000198"), None)

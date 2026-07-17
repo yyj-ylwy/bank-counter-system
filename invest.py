@@ -526,6 +526,45 @@ def confirm_settlements():
               f"已确认份额 {confirmed} 笔、资金到账 {settled} 笔（截至 {today}）")
 
 
+# ==================== UC-610 理财交易记录 / 交割单查询 ====================
+@bp.get("/transactions")
+@clerk
+def transactions():
+    """列出客户的理财申赎记录(交割单)：产品/类型/成交价/份额/金额/费用/受理状态/确认到账日/已实现盈亏。
+    与 UC-607 持仓(当前快照)互补——这里看的是每一笔申赎的历史与状态(有没有到账/确认)。"""
+    db = get_db()
+    _acc, cust, rerr = resolve_account_no(db, (request.args.get("ident") or "").strip())
+    if rerr:
+        return fail(rerr[0], rerr[1])
+    q = {"customer_id": cust["_id"], "business_type": {"$in": [C.TXN_INVEST_BUY, C.TXN_INVEST_SELL]}}
+    rows, prod_cache, pending = [], {}, 0
+    for t in db.business_transaction.find(q).sort("txn_time", -1).limit(200):  # 最近 200 笔，倒序
+        code = t.get("product_code")
+        if code not in prod_cache:
+            prod_cache[code] = db.invest_product.find_one({"code": code})
+        p = prod_cache[code]
+        is_buy = t["business_type"] == C.TXN_INVEST_BUY
+        status = t.get("settle_status")
+        if status in (C.INVEST_SETTLE_STATUS["BUY_PENDING"], C.INVEST_SETTLE_STATUS["SELL_PENDING"]):
+            pending += 1  # 待确认/待到账 计一笔
+        rows.append({
+            "txn_no": t["txn_no"],
+            "txn_time": t["txn_time"].strftime("%Y-%m-%d %H:%M:%S") if t.get("txn_time") else None,
+            "type": "申购" if is_buy else "赎回",
+            "product": (p["name"] if p else str(code)) + f"（{code}）",
+            "units": float(dec(t.get("units", 0))),
+            "price_cny": float(dec(t.get("price_cny", 0))),
+            "amount": float(dec(t.get("amount", 0))),       # 申购=实付合计、赎回=实收到账
+            "fee": float(dec(t.get("fee", 0))),
+            "settle_status": status,
+            "expect_date": t.get("confirm_date") if is_buy else t.get("settle_date"),  # 确认日/到账日
+            "realized": float(dec(t["realized"])) if (not is_buy and t.get("realized") is not None) else None,
+        })
+    return ok({"customer": {"customer_no": cust["customer_no"], "name": cust["name"]},
+               "transactions": rows, "pending": pending,
+               "hint": None if rows else "该客户暂无理财交易记录"})
+
+
 # ==================== UC-606 持仓查询（累计盈亏 + 日/周/月/年价格变动）====================
 @bp.get("/holdings")
 @clerk
