@@ -144,6 +144,7 @@ def run():
     ok("609 到期申购单被确认份额 [正常流]", OK(cs) and cs["data"]["confirmed"] >= 1)
     tt = dbx.business_transaction.find_one({"txn_no": bc["data"]["confirm_no"]})
     ok("609 确认后状态=份额已确认 [判定]", tt and tt.get("settle_status") == "份额已确认")
+    ok("609 force模式忽略T+1确认全部待处理 [组合]", OK(api("POST", "/api/invest/confirm-settlements", INV, json={"force": True})))
 
     # UC-610 理财交易记录/交割单：列出客户申赎、带受理状态
     tr = api("GET", "/api/invest/transactions", INV, query={"ident": cm["id_no"]})

@@ -509,21 +509,25 @@ def sell():
 @clerk
 def confirm_settlements():
     """把到了确认日/到账日的申赎单据从"待确认/待到账"翻成"已确认/已到账"。
+    force=true：演示用，忽略 T+1 日期直接确认全部待处理（当天下的单确认日是明天，否则当天看不到流转）。
     ponytail: 教学简化——份额/资金在下单时已即时入账，这里只做交割单状态位的 T+1 流转(可演示、可讲)。"""
+    force = _truthy(_body().get("force"))  # 演示开关：不管确认日/到账日是否到期
     db = get_db()
     today = now().strftime("%Y-%m-%d")  # 与快照里 confirm_date/settle_date 同为 YYYY-MM-DD，可直接字符串比较
-    confirmed = db.business_transaction.update_many(  # 申购：确认日<=今天 → 份额已确认
-        {"business_type": C.TXN_INVEST_BUY, "settle_status": C.INVEST_SETTLE_STATUS["BUY_PENDING"],
-         "confirm_date": {"$lte": today}},
+    buy_q = {"business_type": C.TXN_INVEST_BUY, "settle_status": C.INVEST_SETTLE_STATUS["BUY_PENDING"]}
+    sell_q = {"business_type": C.TXN_INVEST_SELL, "settle_status": C.INVEST_SETTLE_STATUS["SELL_PENDING"]}
+    if not force:  # 真实模式：只处理确认日/到账日已到（<=今天）的
+        buy_q["confirm_date"] = {"$lte": today}
+        sell_q["settle_date"] = {"$lte": today}
+    confirmed = db.business_transaction.update_many(buy_q,   # 申购 → 份额已确认
         {"$set": {"settle_status": C.INVEST_SETTLE_STATUS["BUY_DONE"]}}).modified_count
-    settled = db.business_transaction.update_many(  # 赎回：到账日<=今天 → 资金已到账
-        {"business_type": C.TXN_INVEST_SELL, "settle_status": C.INVEST_SETTLE_STATUS["SELL_PENDING"],
-         "settle_date": {"$lte": today}},
+    settled = db.business_transaction.update_many(sell_q,    # 赎回 → 资金已到账
         {"$set": {"settle_status": C.INVEST_SETTLE_STATUS["SELL_DONE"]}}).modified_count
     write_audit(db, user_id=g.user["_id"], action="INVEST_SETTLE", object_type="business_transaction",
-                object_id="-", result=C.RESULT_SUCCESS, detail={"confirmed": confirmed, "settled": settled})
+                object_id="-", result=C.RESULT_SUCCESS, detail={"confirmed": confirmed, "settled": settled, "force": force})
+    tail = "（演示：忽略T+1日期，确认全部待处理）" if force else f"（截至 {today} 到期的；未到确认日/到账日的不处理）"
     return ok({"confirmed": confirmed, "settled": settled},
-              f"已确认份额 {confirmed} 笔、资金到账 {settled} 笔（截至 {today}）")
+              f"已确认份额 {confirmed} 笔、资金到账 {settled} 笔{tail}")
 
 
 # ==================== UC-610 理财交易记录 / 交割单查询 ====================

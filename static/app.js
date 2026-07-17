@@ -165,7 +165,7 @@ function tbl(rows, cols) {
     const cls = c.fmt === money ? ' class="num"' : '';
     return `<td${cls}>${esc(val)}</td>`;
   }).join('') + '</tr>').join('');
-  return `<table class="grid">${head}${body}</table>`;
+  return `<div class="grid-wrap"><table class="grid">${head}${body}</table></div>`;  // 包一层：宽表在面板内横向滚动，不撑破布局
 }
 
 // ---------- DOM 引用 ----------
