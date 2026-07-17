@@ -231,18 +231,6 @@ const OPERATIONS = {
       result: d => kv({ '被冲流水': d.reversed_txn_no, '反向笔数': d.legs_reversed, '冲正后余额': money(d.balance) })
         + '<h4>红字流水</h4>' + savTxnTable(d.reversals),
     },
-    {
-      code: 'UC-110', name: '账实对账', method: 'GET', path: '/api/savings/reconcile',
-      hint: '核对每个储蓄账户：余额 = Σ入账流水 − Σ出账流水（已冲正交易成对排除）。差异为空即全库账平',
-      fields: [],
-      result: d => kv({ '核对账户数': d.checked, '账实相符': d.matched, '存在差异': d.mismatched.length, '暂不可核对': d.skipped.length })
-        + (d.mismatched.length ? '<h4>差异账户</h4>' + tbl(d.mismatched, [
-            { k: 'account_no', label: '账号' }, { k: 'balance', label: '账面余额', fmt: money },
-            { k: 'expected', label: '流水推算余额', fmt: money }, { k: 'diff', label: '差额', fmt: money },
-          ]) : '<p class="hint">✔ 全部账户账实相符</p>')
-        + (d.skipped.length ? '<h4>暂不可核对</h4>' + tbl(d.skipped, [{ k: 'account_no', label: '账号' }, { k: 'reason', label: '原因' }]) : '')
-        + (d.unknown_types.length ? `<p class="hint">存在未登记方向的流水类型：${d.unknown_types.join('、')}（请在对账方向表登记）</p>` : ''),
-    },
   ],
 
   // ================= 贷款业务员 =================

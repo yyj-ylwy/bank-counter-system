@@ -364,12 +364,6 @@ async def run_all():
             r = await get_page_text(page)
             ok("储蓄", "S14c", "重复冲正被拒", "已被冲正" in r or "不可重复" in r, r[:100])
 
-        # S15: 账实对账（线上库有历史数据，不断言零差异，断言接口/渲染正常）
-        await click_menu(page, "账实对账")
-        await submit(page)
-        r = await get_page_text(page)
-        ok("储蓄", "S15", "账实对账执行并渲染", check_text(["对账完成", "核对账户数"], r), r[:120])
-
         # ==================== 贷款业务 (6流) ====================
         print("\n📋 贷款业务 6 流")
 
