@@ -77,8 +77,20 @@ const PARAM_NAME = {
 // 哪些参数属于"利率/比例"(输入小数、显示百分比)，其余是"限额/金额"(输入并显示为元) —— 与后端 RATE_PARAM_KEYS 对应
 const PARAM_RATE_KEYS = ['LOAN_RATE', 'LOAN_OVERDUE_RATE', 'TRANSFER_FEE_RATE', 'CC_MIN_REPAY_RATE', 'CC_CASH_ADVANCE_FEE_RATE', 'CC_MIN_INTEREST_RATE', 'CC_LIMIT_DEPOSIT_RATIO', 'FX_SPREAD'];
 const paramIsRate = k => PARAM_RATE_KEYS.includes(k);
-// 下拉标签直接标注类型，让管理员一眼看出该填小数还是填元
-const PARAM_OPTIONS = Object.entries(PARAM_NAME).map(([value, label]) => ({ value, label: label + (paramIsRate(value) ? '（利率·填百分数，如40=40%）' : '（限额/金额·填元）') }));
+// 币种代码 → 中文单位（卡种额度按本卡币种填写：人民币卡填人民币、美元卡填美元）
+const CUR_UNIT = { CNY: '人民币', USD: '美元' };
+// 卡种初始额度伪键 → 该卡结算币种单位（币种由卡种固定，不随参数变）
+const CARD_LIMIT_UNIT = {
+  CARD_LIMIT_UNIONPAY_PLATINUM: '人民币', CARD_LIMIT_UNIONPAY_DIAMOND: '人民币',
+  CARD_LIMIT_VISA_PLATINUM: '美元', CARD_LIMIT_MASTERCARD_ELITE: '美元',
+};
+// 下拉标签直接标注类型与单位，让管理员一眼看出该填小数还是填元/人民币/美元
+const PARAM_OPTIONS = Object.entries(PARAM_NAME).map(([value, label]) => {
+  const tag = CARD_LIMIT_UNIT[value] ? `（初始额度·填${CARD_LIMIT_UNIT[value]}，单位${CARD_LIMIT_UNIT[value]}）`
+    : paramIsRate(value) ? '（利率·填百分数，如40=40%）'
+      : '（限额/金额·填元）';
+  return { value, label: label + tag };
+});
 const paramTypeLabel = t => PARAM_TYPE_LABEL[t] || t || '其他';
 const paramName = k => PARAM_NAME[k] || k;
 // 值按类型带单位显示：利率→百分比，限额→元，汇率等原样
@@ -792,16 +804,17 @@ const OPERATIONS = {
         { k: 'param_type', label: '类型', fmt: paramTypeLabel },
         { k: 'param_value', label: '当前值', fmt: paramValue },
         { k: 'changed_at', label: '最近修改' },
-      ]) + ((d.card_limits && d.card_limits.length) ? '<h4>信用卡各卡种初始授信额度（卡种规格·只读）</h4>' + tbl(d.card_limits, [
+      ]) + ((d.card_limits && d.card_limits.length) ? '<h4>信用卡各卡种初始授信额度（人民币卡以人民币计、美元卡以美元计）</h4>' + tbl(d.card_limits, [
         { k: 'card_type', label: '卡种' }, { k: 'network', label: '卡组织' },
-        { k: 'currency', label: '币种' }, { k: 'default_limit', label: '初始授信额度', fmt: money },
+        { k: 'currency', label: '结算币种', fmt: c => (CUR_UNIT[c] || c) + '（' + c + '）' },
+        { k: 'default_limit', label: '初始授信额度', fmt: (v, r) => money(v) + ' ' + (CUR_UNIT[r.currency] || r.currency) },
       ]) : ''),
     },
     {
       code: 'UC-502b', name: '维护参数', method: 'POST', path: '/api/admin/params',
       fields: [
         { n: 'param_key', label: '选择参数', type: 'select', options: PARAM_OPTIONS },
-        { n: 'param_value', label: '新的值', required: true, hint: '利率填百分数(如40=40%)；限额/金额/卡种额度填元' },
+        { n: 'param_value', label: '新的值', required: true, hint: '利率填百分数(如40=40%)；一般限额/金额填元；卡种初始额度按本卡币种填——人民币卡填人民币、美元卡填美元' },
       ],
       lookup: {
         byField: 'param_key',
@@ -812,14 +825,14 @@ const OPERATIONS = {
           : r.param_type === 'RATE' ? { param_value: String(+r.param_value * 100) }  // 利率以百分数回填，避免"盲改"
           : { param_value: r.param_value },
         show: r => r.param_key && r.param_key.startsWith('CARD_LIMIT_')
-          ? `当前初始额度：${money(r.default_limit)} ${r.currency}（卡种规格默认 ${money(r.spec_default)}）`
+          ? `当前初始额度：${money(r.default_limit)} ${CUR_UNIT[r.currency] || r.currency}（该卡以${CUR_UNIT[r.currency] || r.currency}结算，请填写新的${CUR_UNIT[r.currency] || r.currency}金额；卡种规格默认 ${money(r.spec_default)} ${CUR_UNIT[r.currency] || r.currency}）`
           : (r.param_type === 'RATE'
             ? `当前值：${paramValue(r.param_value, r)}　类型：利率（请填百分数：40=40%）`
             : `当前值：${paramValue(r.param_value, r)}　类型：限额（请填金额，单位元）`),
       },
       // 仅利率键界面填百分数、发送时转回小数；卡种额度键不是利率、不转换，原样发数字，后端按 key 路由
       transform: v => paramIsRate(v.param_key) ? Object.assign({}, v, { param_value: String(+v.param_value / 100) }) : v,
-      hint: '先选参数点「查询并回填」：会带出当前值、并标明它是"利率(填百分数，如40=40%)"还是"限额(填元)"，看清后再改。改后立即生效。',
+      hint: '先选参数点「查询并回填」：会带出当前值、并标明它是"利率(填百分数，如40=40%)"、"限额(填元)"、还是"卡种初始额度(按本卡币种：人民币卡填人民币、美元卡填美元)"，看清后再改。改后立即生效。',
       result: d => `<p class="hint">保存成功，可到「参数列表」查看最新值</p>`,
     },
     {
